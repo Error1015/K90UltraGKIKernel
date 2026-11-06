@@ -1,0 +1,9 @@
+本仓库的构建脚本（scripts/、config/、.github/）以 GPL-2.0 发布。
+
+内核源码、各 root 管理器、SUSFS 及各功能补丁来自上游项目，遵循各自的许可证
+（绝大多数为 GPL-2.0）。构建产物（Image / AnyKernel3 zip）依赖并包含上述
+GPL-2.0 代码，分发时请一并遵守 GPL-2.0 的源码提供义务。
+
+完整许可证文本：https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+本项目与小米、Google、Qualcomm 均无隶属关系。刷机风险自负。

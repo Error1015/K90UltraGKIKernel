@@ -1,0 +1,231 @@
+name: Build GKI Kernel
+
+# 为 Redmi K90 Ultra (warsaw / SM8750 / 6.6) 构建集成 KernelSU 系 root 与 SUSFS 的 GKI 内核
+# 手动触发：Actions → Build GKI Kernel → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      root_manager:
+        description: "Root 管理器"
+        type: choice
+        required: true
+        default: kernelsu-next
+        options:
+          - kernelsu-next
+          - kernelsu
+          - bakasu
+          - sukisu-ultra
+          - kowsu
+          - none
+      root_ref:
+        description: "Root 仓库分支 / tag / commit（留空 = 默认分支最新）"
+        type: string
+        default: ""
+
+      susfs:
+        description: "SUSFS（root 隐藏，建议开启）"
+        type: boolean
+        default: true
+      nomount:
+        description: "NoMount（VFS 层无挂载点伪装）"
+        type: boolean
+        default: false
+      bbg:
+        description: "Baseband Guard（基带分区保护）"
+        type: boolean
+        default: false
+      droidspaces:
+        description: "DroidSpaces-OSS（容器运行时）"
+        type: boolean
+        default: false
+      networking:
+        description: "Networking（BBRv3 / WireGuard / IPSet / CIFS）"
+        type: boolean
+        default: false
+      ntsync:
+        description: "NTSync（Proton / Wine 同步原语）"
+        type: boolean
+        default: false
+      ptrace_fix:
+        description: "Ptrace Leak Fix（6.6 已包含在 SUSFS 补丁内）"
+        type: boolean
+        default: false
+      unicode_fix:
+        description: "Unicode Fix（修复 /proc 名称绕过）"
+        type: boolean
+        default: false
+      bpf:
+        description: "BTF / eBPF / FUSE-BPF"
+        type: boolean
+        default: false
+
+      page_size:
+        description: "内核页大小"
+        type: choice
+        required: true
+        default: 4k
+        options:
+          - 4k
+          - 16k
+
+      manifest_branch:
+        description: "GKI 源码清单分支（默认跟踪 6.6 LTS）"
+        type: string
+        default: common-android15-6.6-lts
+      kernel_tag:
+        description: "锁定到某个 ACK tag（例如 android15-6.6-2025-06，留空 = 分支最新）"
+        type: string
+        default: ""
+      stock_kernel_version:
+        description: "版本对齐（例如 6.6.57）：把内核版本改成出厂版本，仅在 vendor 模块 vermagic 不匹配时使用"
+        type: string
+        default: ""
+      susfs_branch:
+        description: "susfs4ksu 分支"
+        type: string
+        default: gki-android15-6.6
+      brand:
+        description: "包名前缀"
+        type: string
+        default: K90Ultra
+
+      publish_release:
+        description: "构建成功后发布 GitHub Release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-gki-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ inputs.root_manager }} / susfs=${{ inputs.susfs }} / ${{ inputs.page_size }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      ROOT_MANAGER: ${{ inputs.root_manager }}
+      ROOT_REF: ${{ inputs.root_ref }}
+      SUSFS: ${{ inputs.susfs }}
+      NOMOUNT: ${{ inputs.nomount }}
+      BBG: ${{ inputs.bbg }}
+      DROIDSPACES: ${{ inputs.droidspaces }}
+      NETWORKING: ${{ inputs.networking }}
+      NTSYNC: ${{ inputs.ntsync }}
+      PTRACE_FIX: ${{ inputs.ptrace_fix }}
+      UNICODE_FIX: ${{ inputs.unicode_fix }}
+      BPF: ${{ inputs.bpf }}
+      PAGE_SIZE: ${{ inputs.page_size }}
+      MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
+      KERNEL_TAG: ${{ inputs.kernel_tag }}
+      STOCK_KERNEL_VERSION: ${{ inputs.stock_kernel_version }}
+      SUSFS_BRANCH: ${{ inputs.susfs_branch }}
+      BRAND: ${{ inputs.brand }}
+      ALLOW_PATCH_FUZZ: "true"
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 释放磁盘空间
+        # GKI 全量 repo sync + Kleaf 构建需要 ~60GB 空闲空间
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/node_modules \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: 增加 Swap（LTO / 并行链接需要）
+        run: |
+          set -euo pipefail
+          if [ ! -f /swapfile ]; then
+            sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          free -h
+
+      - name: 安装构建依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex zip unzip python3 git curl ca-certificates
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory '*'
+
+      - name: 准备源码与补丁
+        run: bash scripts/prepare.sh
+
+      - name: 编译内核
+        run: bash scripts/build.sh
+
+      - name: 打包 AnyKernel3
+        run: bash scripts/package.sh
+
+      - name: 上传刷机包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: 上传内核配置与构建说明
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-config-and-info
+          path: |
+            out/kernel.config
+            out/build-info.md
+          if-no-files-found: warn
+
+      - name: 上传补丁 rejects（如果有）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-rejects
+          path: patch-rejects/
+          if-no-files-found: ignore
+
+      - name: 构建摘要
+        if: always()
+        run: |
+          {
+            echo "### 构建结果"
+            echo
+            echo "- Root：\`${{ inputs.root_manager }}\`，SUSFS：\`${{ inputs.susfs }}\`，页大小：\`${{ inputs.page_size }}\`"
+            echo "- 源码：\`${{ inputs.manifest_branch }}\`"
+            echo "- 产物：\`${{ env.ZIP_NAME }}\`"
+            [ -f out/build-info.md ] && cat out/build-info.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 发布 Release
+        if: ${{ inputs.publish_release && success() }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.ZIP_NAME }}
+          body_path: out/build-info.md
+          files: ${{ env.ZIP_PATH }}
+          make_latest: false
+          fail_on_unmatched_files: true

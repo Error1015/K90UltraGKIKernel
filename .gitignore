@@ -1,0 +1,14 @@
+# 构建产物
+out/
+kernel/
+susfs4ksu/
+kernel_patches/
+AnyKernel3/
+Droidspaces-OSS/
+*.zip
+*.rej
+*.orig
+
+# 本地调试
+.env
+tmp/
