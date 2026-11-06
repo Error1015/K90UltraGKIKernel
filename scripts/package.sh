@@ -37,6 +37,31 @@ if [ -f "$AK3/anykernel.sh" ]; then
     # 只替换 boot 分区里的内核，不碰 vendor_boot / vendor_dlkm
     sed -i 's|^do\.modules=.*|do.modules=0|' "$AK3/anykernel.sh"
   fi
+  # 刷机时把 LKM 冲突的提示打给用户看（只加 ui_print，不改变刷写行为）
+  python3 - "$AK3/anykernel.sh" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+s = p.read_text(encoding="utf-8", errors="replace")
+anchor = ". tools/ak3-core.sh"
+if anchor in s and "LKM_CONFLICT_HINT" not in s:
+    hint = anchor + """
+
+# LKM_CONFLICT_HINT: 本内核内置 KSU，与 LKM 模式残留的 kernelsu.ko 不兼容
+ui_print " "
+ui_print "  ------------------------------------------------------------"
+ui_print "  注意：本包内核已内置 KSU（GKI 模式）"
+ui_print "  若你之前是 LKM 模式（管理器首页显示 LKM / LKM 模式）："
+ui_print "  请先刷回原厂 boot + init_boot（或在管理器里恢复原厂镜像），"
+ui_print "  否则 init_boot 里那份 kernelsu.ko 会与内置 KSU 冲突并卡 Logo。"
+ui_print "  ------------------------------------------------------------"
+ui_print " "
+"""
+    s = s.replace(anchor, hint, 1)
+    p.write_text(s, encoding="utf-8")
+    print("已注入 LKM 提示")
+else:
+    print("未找到锚点或已注入过，跳过")
+PYEOF
   info "anykernel.sh 已按 GKI 场景微调"
 fi
 

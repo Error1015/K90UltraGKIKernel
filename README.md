@@ -49,11 +49,19 @@ adb pull /sdcard/stock_boot.img
 
 ### 刷机前自检（建议先做）
 
-产物是一个内核二进制，刷错位置的代价很高。可以先在电脑上做两件事，都不碰手机：
+产物是一个内核二进制，刷错位置的代价很高。可以先在电脑上做两件事，都不碰手机。
+
+**第 0 步（最容易漏）：确认基座不是 LKM 模式。**
+管理器首页的「工作模式」如果显示 **LKM**，说明 `init_boot` 被 LKM 改过（塞了 `kernelsu.ko`），
+必须先恢复原厂 `boot` + `init_boot` 再刷，否则**一定卡 Logo** —— 原因和完整流程见
+[第六节第 1 小节](#1-头号原因之前是-lkm-模式基座没换干净)。
 
 ```bash
 # 1) 静态体检：头部结构、页大小、内嵌 .config、KSU/SUSFS 是否真的编进去了
 bash scripts/verify-image.sh K90Ultra-GKI-....zip --expect-root --expect-susfs
+
+# 1.5) 设备侧自检（只读，连上手机就能跑）：页大小/KMI/LKM 残留/KSU 状态
+bash scripts/check-device.sh
 ```
 
 它会从 Image 里解出内嵌的 `.config`（`CONFIG_IKCONFIG`）逐项核对，输出形如：
@@ -181,6 +189,7 @@ scripts/
   prepare.sh                  # 同步源码 + 集成 root/补丁 + 写配置 + 提交源码树
   build.sh                    # Kleaf 构建 + 产物校验
   package.sh                  # AnyKernel3 打包 + 构建说明
+  check-device.sh             # 连手机只读自检：LKM 残留 / 页大小 / KMI / KSU 状态
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
@@ -211,7 +220,61 @@ scripts/
 2. **A/B 设备没备份**：切到另一个槽再试 —— `fastboot --set-active=a`（或 `b`），重启
 3. **都没有**：下载对应版本的 fastboot 线刷包，只解出 `images/boot.img`，然后 `fastboot flash boot boot.img`（先别整包刷，保住数据）
 
-### 1. 先确认刷入方式对不对（最常见的坑）
+### 1. 头号原因：之前是 LKM 模式，基座没换干净
+
+**LKM 模式不改内核，改的是 ramdisk。** Android 13 及以后的设备有独立的 `init_boot` 分区，
+KernelSU 的 LKM 安装会把 `kernelsu.ko` 塞进 `init_boot` 的 ramdisk，并让首段 init 在开机时加载它；
+内核（`boot` 分区）保持出厂原样。
+
+而本仓库产的包是 **GKI 模式（`CONFIG_KSU=y`，KSU 直接编进内核）**，只替换 `boot` 里的内核。
+于是刷完之后：
+
+| 分区 | 内容 | 状态 |
+| --- | --- | --- |
+| `boot` | 我们的内核，KSU 内置 | ✅ 已换 |
+| `init_boot` | 出厂内核配套的 `kernelsu.ko` + 加载钩子 | ❌ **还在** |
+
+后果：那份 `kernelsu.ko` 是照**出厂内核 + 官方 GKI 配置**编的，而我们改了配置
+（`CONFIG_KSU=y`、关掉符号裁剪、SUSFS/NoMount 等），`module_layout` 这类符号的 CRC 全变了 →
+`insmod` 一定失败。而 LKM 的加载钩子挂在首段 init 上，它等不到模块就会停在那里 ——
+表现出来正是**卡住不动**，而不是 panic 后重启。
+
+> 反过来，如果你只用 fastboot 刷回出厂 `boot.img` 救砖、没动 `init_boot`，系统能正常开机，
+> 那是因为出厂内核配出厂 `kernelsu.ko` 恰好匹配，**不代表基座干净**。
+
+#### 正确切换流程
+
+```bash
+# 1) 恢复出厂 boot + init_boot（两个都要，缺一个都还是 LKM）
+fastboot flash boot      stock_boot.img
+fastboot flash init_boot stock_init_boot.img
+fastboot reboot
+
+# 2) 确认基座干净：管理器首页应显示「未安装」
+adb shell getprop ro.boot.slot_suffix
+```
+
+管理器里更省事的做法：首页 →「卸载」→ 选「恢复原厂镜像」，它会同时把 boot / init_boot 写回原厂。
+
+```bash
+# 3) 基座干净后再刷本仓库的 AK3 包（管理器里「安装 → 选择本地文件」，或 recovery 刷 zip）
+
+# 4) 开机后管理器首页应显示「GKI 模式」/「已安装」，不需要再 patch 任何分区
+```
+
+#### 怎么判断现在是哪种状态
+
+```bash
+# 内核里到底有没有内置 KSU
+adb shell su -c 'ls /sys/module/kernelsu'        # 内置 KSU 时存在
+# 或直接看版本串与 KSU 状态
+adb shell uname -r
+```
+
+管理器首页的「工作模式」一栏最直接：**LKM = init_boot 被改过；GKI = 内核内置**。
+要切到本仓库的包，目标状态必须是**基座为出厂、然后只换 boot 里的内核**。
+
+### 2. 先确认刷入方式对不对（最常见的坑）
 
 AnyKernel3 的 zip 是给 **recovery / root 管理器**用的，**不是 fastboot 镜像**：
 
@@ -225,7 +288,11 @@ AnyKernel3 的 zip 是给 **recovery / root 管理器**用的，**不是 fastboo
 `magiskboot` 可以从 Magisk 官方 APK 里取（`lib/arm64-v8a/libmagiskboot.so` 改名为 `magiskboot`），
 或者用 [MagiskOnWSA/magiskboot 的 PC 构建](https://github.com/1nnovat1on/magiskboot)。
 
-### 2. 最快的验证：`fastboot boot` 临时启动（不写分区）
+### 3. 最快的验证：`fastboot boot` 临时启动（不写分区）
+
+**前提：base 必须是干净的**（第 1 小节那一步已经做完）。`fastboot boot` 只临时替换 `boot` 分区，
+`init_boot` 仍然读 flash 里的那一份 —— 基座没洗干净，这一步会得到和刷入一样的卡 Logo，
+从而误判成"内核坏了"。
 
 把 Image 塞回一份原始 boot.img，然后**临时启动**它 —— 只在内存里跑一次，重启就恢复原样：
 
@@ -240,11 +307,8 @@ fastboot boot tmp_boot.img
 - 还是卡 logo → 内核侧问题，继续往下看；
 - 起不来就长按电源重启，**什么都没写进 flash**。
 
-> 如果你之前是 **LKM 模式的 root**（管理器里"工作模式"显示 LKM，即 stock 内核 + 补丁过的 init_boot），
-> 刷内核前请先在管理器里"恢复原厂镜像"把 init_boot 还原，否则 ramdisk 里那个 `kernelsu.ko`
-> 会和内核内置的 KSU 打架。
 
-### 3. 拿内核自己的说法：pstore
+### 4. 拿内核自己的说法：pstore
 
 内核崩溃/卡死时会把 console 写进 ramoops。**回到原系统后**能读上一次失败的日志：
 
@@ -262,7 +326,7 @@ adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
 | 一段 `Unable to handle kernel paging request` / `BUG:` 栈 | 内核代码问题，通常是某个功能补丁 | 按第 3 步二分 |
 | 什么都没有 | 内核根本没跑起来（刷入方式 / AVB / boot header） | 回到第 1 步 |
 
-### 4. 二分定位：用 `preset` 把变量降到最少
+### 5. 二分定位：用 `preset` 把变量降到最少
 
 | 构建 | 内容 | 用途 |
 | --- | --- | --- |
