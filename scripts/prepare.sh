@@ -36,7 +36,7 @@ DROIDSPACES_REPO="${DROIDSPACES_REPO:-https://github.com/ravindu644/Droidspaces-
 DROIDSPACES_REF="${DROIDSPACES_REF:-}"
 
 ALLOW_PATCH_FUZZ="${ALLOW_PATCH_FUZZ:-true}"
-PRESET="${PRESET:-safe}"
+PRESET="${PRESET:-full}"
 
 SUSFS_ON="${SUSFS:-false}"
 NOMOUNT_ON="${NOMOUNT:-false}"
@@ -53,7 +53,7 @@ export ALLOW_PATCH_FUZZ
 # ---------------------------------------------------------------------------
 # 预设：把"高风险补丁组合"收口，避免一次引入太多变量导致卡标难以定位
 #   safe    —— 只保留 root + SUSFS（社区验证最充分的组合），其余强制关闭
-#   full    —— 完全按开关走
+#   full    —— 完全按开关走（workflow 默认）
 #   vanilla —— 不集成 root、不加任何补丁，用来单独验证"基础 GKI 内核能不能启动"
 # ---------------------------------------------------------------------------
 resolve_preset() {
@@ -189,7 +189,7 @@ setup_root() {
   esac
 
   if is_true "$SUSFS_ON" && [ "$ROOT_MANAGER" = "kowsu" ]; then
-    die "KowSU 与 SUSFS 不兼容，请关闭 SUSFS 或改用其他 Root 管理器"
+    die "KowSU 与 SUSFS 不兼容（workflow 选 root_manager=all 时会自动为 kowsu 关掉 SUSFS）：请关闭 SUSFS 或换一个 Root 管理器"
   fi
 
   log "克隆 Root 管理器: ${ROOT_MANAGER}"

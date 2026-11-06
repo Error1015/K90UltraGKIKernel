@@ -12,7 +12,7 @@ ANYKERNEL3_REPO="${ANYKERNEL3_REPO:-https://github.com/WildKernels/AnyKernel3.gi
 ANYKERNEL3_BRANCH="${ANYKERNEL3_BRANCH:-gki-2.0}"
 BRAND="${BRAND:-K90Ultra}"
 PAGE_SIZE="${PAGE_SIZE:-4k}"
-PRESET="${PRESET:-safe}"
+PRESET="${PRESET:-full}"
 ROOT_MANAGER="${ROOT_MANAGER:-none}"
 SUSFS_ON="${SUSFS:-false}"
 

@@ -2,29 +2,33 @@ name: Build GKI Kernel
 
 # 为 Redmi K90 Ultra (warsaw / SM8750 / 6.6) 构建集成 KernelSU 系 root 与 SUSFS 的 GKI 内核
 # 手动触发：Actions → Build GKI Kernel → Run workflow
+#
+# root_manager 默认为 all：一次运行把所有 root 管理器（kernelsu-next / kernelsu / bakasu /
+# sukisu-ultra / kowsu）各出一份 AnyKernel3 刷机包，并行构建，互不影响。
 
 on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "构建预设：safe = 只留 root + SUSFS（推荐先验证这个）；full = 按下面的开关全量构建；vanilla = 不集成任何东西，只验证基础内核"
+        description: "构建预设：full = 按下面的开关全量构建（默认）；safe = 只留 root + SUSFS；vanilla = 不集成任何东西，只验证基础内核"
         type: choice
         required: true
-        default: safe
+        default: full
         options:
-          - safe
           - full
+          - safe
           - vanilla
       variants:
-        description: "想一次并行构建多个预设时填写，逗号分隔（例如 safe,vanilla）；留空则只构建上面的 preset"
+        description: "想一次并行构建多个预设时填写，逗号分隔（例如 full,safe）；留空则只构建上面的 preset"
         type: string
         default: ""
       root_manager:
-        description: "Root 管理器"
+        description: "Root 管理器：all = 全部（每个管理器各出一个包）；也可以只选一个"
         type: choice
         required: true
-        default: kernelsu-next
+        default: all
         options:
+          - all
           - kernelsu-next
           - kernelsu
           - bakasu
@@ -32,12 +36,12 @@ on:
           - kowsu
           - none
       root_ref:
-        description: "Root 仓库分支 / tag / commit（留空 = 默认分支最新）"
+        description: "Root 仓库分支 / tag / commit（留空 = 默认分支最新；选 all 时对所有管理器生效）"
         type: string
         default: ""
 
       susfs:
-        description: "SUSFS（root 隐藏，建议开启）"
+        description: "SUSFS（root 隐藏，建议开启）。KowSU 与 SUSFS 不兼容，选 all 时 kowsu 那份会自动关闭 SUSFS"
         type: boolean
         default: true
       nomount:
@@ -104,7 +108,7 @@ on:
         default: K90Ultra
 
       publish_release:
-        description: "构建成功后发布 GitHub Release"
+        description: "构建成功后发布 GitHub Release（每个 root 管理器一个）"
         type: boolean
         default: true
 
@@ -116,58 +120,119 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # 把 "preset / variants" 解析成一个数组，让一次运行能并行构建多个变体
-  # （排查卡标时非常有用：safe 与 vanilla 同时出包，一轮就能定性）
+  # 把 "preset / variants / root_manager" 解析成一张构建矩阵：
+  #   预设 × root 管理器 → 每个组合一个并行 job、一份 AK3 包
+  # （选 all 时默认就是 full × 5 个管理器，一次运行出全部刷机包）
   resolve:
-    name: 解析构建变体
+    name: 解析构建矩阵
     runs-on: ubuntu-latest
     outputs:
-      presets: ${{ steps.parse.outputs.presets }}
+      matrix: ${{ steps.parse.outputs.matrix }}
+      count: ${{ steps.parse.outputs.count }}
     steps:
-      - name: 解析 preset / variants
+      - name: 解析 preset / variants / root_manager
         id: parse
         shell: bash
         env:
           PRESET: ${{ inputs.preset }}
           VARIANTS: ${{ inputs.variants }}
+          ROOT_MANAGER: ${{ inputs.root_manager }}
+          SUSFS: ${{ inputs.susfs }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, sys
 
-          raw = (os.environ.get("VARIANTS") or "").strip() or os.environ["PRESET"]
-          allowed = {"safe", "full", "vanilla"}
-          items = []
-          for part in raw.split(","):
+          # 所有受支持的 root 管理器（顺序即矩阵顺序）
+          ALL_ROOTS = ["kernelsu-next", "kernelsu", "bakasu", "sukisu-ultra", "kowsu"]
+          ALLOWED_PRESETS = {"safe", "full", "vanilla"}
+          ALLOWED_ROOTS = set(ALL_ROOTS) | {"none"}
+
+          def truthy(value):
+              return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+          # --- 预设（variants 优先，逗号分隔） ---
+          raw_presets = (os.environ.get("VARIANTS") or "").strip() or os.environ["PRESET"]
+          presets = []
+          for part in raw_presets.split(","):
               name = part.strip().lower()
               if not name:
                   continue
-              if name not in allowed:
+              if name not in ALLOWED_PRESETS:
                   raise SystemExit(f"未知预设: {name}（可选 safe / full / vanilla）")
-              if name not in items:
-                  items.append(name)
-          if not items:
+              if name not in presets:
+                  presets.append(name)
+          if not presets:
               raise SystemExit("没有解析出任何预设")
-          print(f"将构建: {', '.join(items)}", file=sys.stderr)
-          print(f"presets={json.dumps(items)}")
+
+          # --- root 管理器（all = 全部） ---
+          raw_root = (os.environ.get("ROOT_MANAGER") or "").strip().lower() or "all"
+          if raw_root == "all":
+              roots = list(ALL_ROOTS)
+          elif raw_root in ALLOWED_ROOTS:
+              roots = [raw_root]
+          else:
+              raise SystemExit(f"未知 Root 管理器: {raw_root}")
+
+          susfs_requested = truthy(os.environ.get("SUSFS"))
+
+          entries = []
+          seen = set()
+          notes = []
+          for preset in presets:
+              for root in roots:
+                  # vanilla 不集成任何 root，多个 root 只会产出完全相同的包，收敛成一份
+                  actual_root = "none" if preset == "vanilla" else root
+                  susfs = susfs_requested and actual_root != "none" and preset != "vanilla"
+                  if susfs and actual_root == "kowsu":
+                      susfs = False
+                      notes.append(f"{preset} / kowsu：KowSU 与 SUSFS 不兼容，该包自动关闭 SUSFS")
+                  key = (preset, actual_root, susfs)
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  entries.append({"preset": preset, "root": actual_root, "susfs": susfs})
+
+          for note in notes:
+              print(f"[!] {note}", file=sys.stderr)
+          print(f"将构建 {len(entries)} 个包: " + ", ".join(f"{e['preset']}/{e['root']}" for e in entries),
+                file=sys.stderr)
+
+          # 写运行摘要，方便一眼看清这一轮到底会出哪些包
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as fh:
+                  fh.write(f"### 构建矩阵（共 {len(entries)} 个包）\n\n")
+                  fh.write("| # | 预设 | Root 管理器 | SUSFS |\n| --- | --- | --- | --- |\n")
+                  for idx, entry in enumerate(entries, start=1):
+                      fh.write(f"| {idx} | `{entry['preset']}` | `{entry['root']}` | "
+                               f"{'✅' if entry['susfs'] else '—'} |\n")
+                  fh.write("\n")
+                  for note in notes:
+                      fh.write(f"> [!] {note}\n")
+                  if notes:
+                      fh.write("\n")
+
+          print(f"matrix={json.dumps(entries, separators=(',', ':'))}")
+          print(f"count={len(entries)}")
           PY
           cat "$GITHUB_OUTPUT"
 
   build:
     needs: resolve
-    name: ${{ matrix.preset }} / ${{ inputs.root_manager }} / ${{ inputs.page_size }}
+    name: ${{ matrix.preset }} / ${{ matrix.root }} / ${{ inputs.page_size }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        preset: ${{ fromJSON(needs.resolve.outputs.presets) }}
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
 
     env:
       PRESET: ${{ matrix.preset }}
-      ROOT_MANAGER: ${{ inputs.root_manager }}
+      ROOT_MANAGER: ${{ matrix.root }}
       ROOT_REF: ${{ inputs.root_ref }}
-      SUSFS: ${{ inputs.susfs }}
+      SUSFS: ${{ matrix.susfs }}
       NOMOUNT: ${{ inputs.nomount }}
       BBG: ${{ inputs.bbg }}
       DROIDSPACES: ${{ inputs.droidspaces }}
@@ -249,7 +314,7 @@ jobs:
       - name: 上传内核配置与构建说明
         uses: actions/upload-artifact@v4
         with:
-          name: build-config-and-info-${{ matrix.preset }}
+          name: build-config-and-info-${{ matrix.preset }}-${{ matrix.root }}
           path: |
             out/kernel.config
             out/build-info.md
@@ -259,7 +324,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patch-rejects-${{ matrix.preset }}
+          name: patch-rejects-${{ matrix.preset }}-${{ matrix.root }}
           path: patch-rejects/
           if-no-files-found: ignore
 
@@ -267,9 +332,9 @@ jobs:
         if: always()
         run: |
           {
-            echo "### 构建结果"
+            echo "### 构建结果：${{ matrix.preset }} / ${{ matrix.root }}"
             echo
-            echo "- Root：\`${{ inputs.root_manager }}\`，SUSFS：\`${{ inputs.susfs }}\`，页大小：\`${{ inputs.page_size }}\`"
+            echo "- Root：\`${{ matrix.root }}\`，SUSFS：\`${{ matrix.susfs }}\`，页大小：\`${{ inputs.page_size }}\`"
             echo "- 源码：\`${{ inputs.manifest_branch }}\`"
             echo "- 产物：\`${{ env.ZIP_NAME }}\`"
             [ -f out/build-info.md ] && cat out/build-info.md
@@ -285,3 +350,48 @@ jobs:
           files: ${{ env.ZIP_PATH }}
           make_latest: false
           fail_on_unmatched_files: true
+
+  # 所有并行 job 跑完后，在运行页面上给一张"这一轮都出了什么"的总表
+  report:
+    name: 汇总
+    needs: [resolve, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 汇总本轮产物
+        env:
+          MATRIX: ${{ needs.resolve.outputs.matrix }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PAGE_SIZE: ${{ inputs.page_size }}
+          SUSFS_BRANCH: ${{ inputs.susfs_branch }}
+          MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+
+          entries = json.loads(os.environ.get("MATRIX") or "[]")
+          print("### 本轮构建汇总\n")
+          print(f"- 矩阵任务数：`{len(entries)}`")
+          print(f"- 矩阵整体结果：`{os.environ.get('BUILD_RESULT', 'unknown')}`")
+          print(f"- 页大小：`{os.environ.get('PAGE_SIZE', '')}`，源码：`{os.environ.get('MANIFEST_BRANCH', '')}`，"
+                f"SUSFS 分支：`{os.environ.get('SUSFS_BRANCH', '')}`")
+          print()
+          if entries:
+              print("| 预设 | Root 管理器 | SUSFS | 需要的管理器 APK |")
+              print("| --- | --- | --- | --- |")
+              apk = {
+                  "kernelsu": "KernelSU",
+                  "kernelsu-next": "KernelSU Next",
+                  "bakasu": "BakaSU",
+                  "sukisu-ultra": "SukiSU-Ultra",
+                  "kowsu": "KowSU",
+                  "none": "不需要",
+              }
+              for entry in entries:
+                  root = entry.get("root", "none")
+                  print(f"| `{entry.get('preset')}` | `{root}` | "
+                        f"{'✅' if entry.get('susfs') else '—'} | {apk.get(root, '?')} |")
+              print()
+          print("> 每个 root 管理器的内核签名不同，**必须装对应的管理器 APK**，装错会显示“未安装”。")
+          print("> 一次只能刷一个包；换管理器时要重新刷对应那份 AK3，不能只换 APK。")
+          PY

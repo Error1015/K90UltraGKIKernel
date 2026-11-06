@@ -4,6 +4,9 @@
 
 产物是 **AnyKernel3 刷机包**，只替换 boot 分区里的内核镜像，不动 vendor_boot / vendor_dlkm / dtbo。
 
+默认一次运行（`preset=full` + `root_manager=all`）会并行构建 **5 个 root 管理器各一份 AK3 包**
+（kernelsu-next / kernelsu / bakasu / sukisu-ultra / kowsu），拿到手按需刷其中一个、装对应的管理器 APK 即可。
+
 ---
 
 ## 一、先看这里（重要）
@@ -21,9 +24,10 @@
 ```text
 1. Fork 本仓库（或者直接用它当模板新建仓库）
 2. 打开 Actions → Build GKI Kernel → Run workflow
-3. 按需勾选功能，点绿色按钮
-4. 等 40~90 分钟，在运行页面的 Artifacts 下载 zip
-5. 备份 boot → 用 KernelSU 管理器刷入 zip → 装对应管理器 APK
+3. 保持默认（preset=full、root_manager=all）直接跑，就会一次出齐所有 root 管理器的包；
+   也可以只挑一个管理器、或按需勾选功能开关
+4. 等 40~90 分钟（矩阵并行，每个管理器各一个 job），在运行页面 / Release 里下载 zip
+5. 备份 boot → 用管理器刷入对应 root 的那份 zip → 装对应管理器 APK
 ```
 
 ### 刷入步骤
@@ -102,14 +106,18 @@ bash scripts/check-device.sh
 
 | 选项 | 说明 |
 | --- | --- |
-| `kernelsu-next` | 默认值。功能最全、SUSFS 支持最顺，社区使用最广 |
+| `all` | **默认值。** 一次运行把下面 5 个管理器全部构建一遍，每个管理器各出一个 AK3 包（矩阵并行，互不影响） |
+| `kernelsu-next` | 功能最全、SUSFS 支持最顺，社区使用最广 |
 | `kernelsu` | tiann 原版，需要额外打 `10_enable_susfs_for_ksu.patch` 才能接 SUSFS（仓库已自动处理） |
 | `bakasu` | 原 ReSukiSU 团队，自带 SUSFS 胶水与 ksu_toolkit，默认只信任自己的管理器签名 |
 | `sukisu-ultra` | 自带 SUSFS 与多管理器签名表 |
-| `kowsu` | **与 SUSFS 不兼容**，勾了 SUSFS 会直接拒绝构建 |
+| `kowsu` | **与 SUSFS 不兼容**：单独选它会直接拒绝构建；选 `all` 时它的那份会自动关掉 SUSFS |
 | `none` | 纯内核，不集成任何 root，用于对照/排查 |
 
-`root_ref` 可以钉住分支、tag 或 commit。留空则取各仓库默认分支最新（`kernelsu-next` 取 `dev`，其余取 `main`/`master`）。
+选 `all` 时产物分别是 `...-kernelsu-next-susfs-full-4k-....zip`、`...-bakasu-susfs-full-4k-....zip` 这样的独立包，
+**刷哪个就装哪个的管理器**，不能混用。`variants` 里填多个预设时，矩阵是"预设 × root 管理器"的笛卡尔积。
+
+`root_ref` 可以钉住分支、tag 或 commit。留空则取各仓库默认分支最新（`kernelsu-next` 取 `dev`，其余取 `main`/`master`）；选 `all` 时这个 ref 会对所有管理器生效（所以只适合填各仓库都存在的公共分支）。
 
 ### 功能开关
 
@@ -129,14 +137,15 @@ bash scripts/check-device.sh
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `preset` | `safe` | `safe` = 只留 root + SUSFS；`full` = 按开关全量；`vanilla` = 什么都不加，验证基础内核 |
+| `preset` | `full` | `full` = 按开关全量构建；`safe` = 只留 root + SUSFS，其余开关强制关闭；`vanilla` = 什么都不加，验证基础内核（此时 root 维度会自动收敛成一份，不会重复构建） |
+| `root_manager` | `all` | 见上一节。`all` = 所有管理器各出一个包 |
 | `page_size` | `4k` | 出厂是 4k。16k 只在确定设备是 16k 时才选 |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
 | `kernel_tag` | 空 | 钉到某个不可变 ACK tag（如 `android15-6.6-2025-06`），只影响 `common` 仓库 |
 | `stock_kernel_version` | 空 | 版本对齐 hack，见下文 |
 | `susfs_branch` | `gki-android15-6.6` | 换 SUSFS 分支时同步改 |
 | `brand` | `K90Ultra` | 只影响产物命名，不改内核版本号（避免破坏 KMI） |
-| `publish_release` | `true` | 构建成功自动发 Release，方便手机直接下载 |
+| `publish_release` | `true` | 构建成功自动发 Release（每个 root 管理器一个），方便手机直接下载 |
 
 #### 关于 `stock_kernel_version`
 
@@ -153,6 +162,9 @@ bash scripts/check-device.sh
 ## 四、构建流水线
 
 ```
+resolve     → preset / variants / root_manager 解析成矩阵（预设 × root 管理器）
+              → 每个组合一个并行 job；kowsu 的组合自动关掉 SUSFS；vanilla 收敛成一份
+
 prepare.sh
  ├── 1. repo init/sync kernel_manifest → kernel/（Kleaf 布局：common/ + prebuilts/ + build/）
  ├── 2. 可选：版本对齐（改 Makefile SUBLEVEL）
@@ -178,7 +190,7 @@ package.sh  → AnyKernel3(gki-2.0) → 放入 Image → zip → 生成 build-in
 ## 五、目录结构
 
 ```
-.github/workflows/build.yml   # 唯一的构建入口，所有选项都在这里
+.github/workflows/build.yml   # 唯一的构建入口，所有选项都在这里（含"预设 × root 管理器"矩阵）
 .github/workflows/verify.yml  # 刷机前体检：静态检查 + QEMU 启动冒烟测试
 config/
   base.config                 # 每次构建都会应用（overlayfs/tmpfs/kallsyms/fanotify、关 WERROR）
@@ -334,13 +346,25 @@ adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
 | `preset=safe` | root + SUSFS（社区验证最充分的组合） | 证明 root 方案可用 |
 | `preset=full` | 全量 | 出问题就逐个关开关，定位到具体补丁 |
 
+注意 `full` 是**默认预设**，所以排查时反过来做：先把 `preset` 改成 `safe`（或 `vanilla`）跑一轮，
+确认真能开机再回到 `full`。
+
 顺序建议：**vanilla → safe → full**，每次只加一层。NoMount 与 BBG 都会改 VFS / 块设备层，
 是最容易"内核活着但 Android 起不来"的两个，建议最后再加。
 
-嫌一轮一轮太慢可以一次性并行出两个包：`variants` 填 `safe,vanilla`，两个 job 同时跑，
-各自上传独立的 zip / Release，一轮就能判断"是基础内核的问题还是补丁的问题"。
+嫌一轮一轮太慢可以一次性并行出多个包：`variants` 填 `safe,full`，两个预设各跑一份；
+再配上 `root_manager=all`，一轮就能同时拿到"所有管理器"的对照包，直接判断是"基础内核的问题、
+某个补丁的问题，还是某个管理器的签名/兼容问题"。
 
 ## 七、常见问题
+
+**默认会一次出 5 个包，会不会很久 / 很费额度**
+矩阵里的每个组合是一个独立 job、独立跑一遍 `repo sync` + 编译，彼此并行。整体墙钟时间和只构建一个差不多
+（主要耗时在源码同步与 LTO 链接），代价是并行占用 5 个 runner。只想出某一个管理器就把它单独选上，
+或者用 `variants` 控制预设数量（`variants=full,safe` + `root_manager=all` 是 10 个 job）。
+
+**可以只换管理器 APK、不重刷内核吗**
+不行。5 个包分别是把对应管理器的内核代码编进去的，签名校验各不相同；换管理器必须刷对应那份 AK3 包。
 
 **构建在 `repo sync` 阶段失败**
 googlesource 偶发限速。workflow 已经内置 3 次重试与低速中断（<1KB/s 持续 60s 直接断开重连）。多次失败可改用 `kernel_tag` 钉到一个已发布的 tag。
