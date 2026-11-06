@@ -17,8 +17,8 @@ ROOT_REF="${ROOT_REF:-}"
 
 MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
 COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
-MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-2024-12}"
-KERNEL_TAG="${KERNEL_TAG:-android15-6.6-2024-12}"
+MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-lts}"
+KERNEL_TAG="${KERNEL_TAG:-}"
 STOCK_KERNEL_VERSION="${STOCK_KERNEL_VERSION:-}"
 
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
