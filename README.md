@@ -218,6 +218,7 @@ scripts/
   package.sh                  # AnyKernel3 打包 + 构建说明
   check-device.sh             # 连手机只读自检：LKM 残留 / 页大小 / KMI / KSU 状态
   get-device-config.sh        # 连手机把出厂 /proc/config.gz 取回来 -> config/device/gki_defconfig
+  get-last-log.sh             # 连手机抓上一次卡住那轮开机的 ramoops 日志并直接给结论
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
@@ -341,9 +342,17 @@ fastboot boot tmp_boot.img
 内核崩溃/卡死时会把 console 写进 ramoops。**回到原系统后**能读上一次失败的日志：
 
 ```bash
-adb shell su -c 'ls -l /sys/fs/pstore/'
-adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
+bash scripts/get-last-log.sh      # 抓 pstore、自动标出关键证据并给结论
 ```
+
+**时序很重要**：ramoops 只保留**上一次**开机的 console。正确顺序是
+
+```
+刷内核 → 卡住 → 长按电源强制重启进原系统 → 立刻跑脚本
+```
+
+再重启几次，旧记录就被覆盖了 —— 这也是为什么之前几次都看到"pstore 是空的"。
+本仓库产物的 `CONFIG_PSTORE_CONSOLE=y`、`CONFIG_PSTORE_RAM=y` 都在，只要设备有 ramoops 节点就一定能留下记录。
 
 对照症状：
 
