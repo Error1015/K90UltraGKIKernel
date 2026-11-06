@@ -19,7 +19,10 @@ MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
 COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
 MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-lts}"
 KERNEL_TAG="${KERNEL_TAG:-}"
+KERNEL_RELEASE="${KERNEL_RELEASE:-}"
 STOCK_KERNEL_VERSION="${STOCK_KERNEL_VERSION:-}"
+
+PY_BIN="$(command -v python3 || command -v python || true)"
 
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
 SUSFS_BRANCH="${SUSFS_BRANCH:-gki-android15-6.6}"
@@ -101,6 +104,9 @@ summary() {
   info "Unicode Fix   : ${UNICODE_ON}"
   info "BTF/eBPF/FUSE : ${BPF_ON}"
   info "源码分支      : ${MANIFEST_BRANCH}${KERNEL_TAG:+ @ $KERNEL_TAG}"
+  if [ -n "$KERNEL_RELEASE" ]; then
+    info "目标内核版本  : ${KERNEL_RELEASE}（源码锁到同版本的 ACK 发布 tag）"
+  fi
   info "页大小        : ${PAGE_SIZE:-4k}"
   info "配置来源      : ${CONFIG_MODE}"
 }
@@ -108,8 +114,46 @@ summary() {
 # ---------------------------------------------------------------------------
 # 1. 同步 GKI 源码（repo + Kleaf 布局）
 # ---------------------------------------------------------------------------
+# 把 "android15-6.6" 这类分支名从 MANIFEST_BRANCH / 版本号里derive出来
+kernel_tag_branch() {
+  local b
+  # common-android15-6.6-lts / common-android15-6.6-2025-06 -> android15-6.6
+  b="$(printf '%s' "$MANIFEST_BRANCH" | grep -oE 'android[0-9]+-[0-9]+\.[0-9]+' | head -1)"
+  [ -n "$b" ] || b="android${ANDROID_VERSION}-${KERNEL_VERSION}"
+  printf '%s' "$b"
+}
+
+# 目标版本 -> ACK 发布 tag（tag 是不可变的，能把源码精确锁到那个 sublevel）
+resolve_kernel_release() {
+  [ -z "$KERNEL_TAG" ] || return 0
+  [ -n "$KERNEL_RELEASE" ] || return 0
+
+  local branch tag
+  branch="$(kernel_tag_branch)"
+  log "按目标版本 ${KERNEL_RELEASE} 解析 ACK 发布 tag（分支前缀 ${branch}）"
+  info "为什么要锁：vendor 模块的符号 CRC 只对 Google 的 KMI 白名单有冻结保证，"
+  info "厂商追加的符号不受保护；源码越新，CRC 变化的可能性越大。"
+
+  [ -n "$PY_BIN" ] || die "需要 python3 或 python 才能解析 tag"
+  local out_tag="$OUT/resolve-kernel-tag.out" probe_log="$OUT/resolve-kernel-tag.log"
+  if ! "$PY_BIN" "$SCRIPT_DIR/py/resolve_kernel_tag.py" \
+        --repo "$COMMON_URL" --branch "$branch" --version "$KERNEL_RELEASE" \
+        > "$out_tag" 2> "$probe_log"; then
+    sed 's/^/    /' "$probe_log" >&2 || true
+    die "无法解析 ${KERNEL_RELEASE} 对应的 ACK 发布 tag；也可以直接把 tag 填到 kernel_tag"
+  fi
+  sed 's/^/    /' "$probe_log" >&2 || true
+
+  tag="$(tr -d '[:space:]' < "$out_tag")"
+  [ -n "$tag" ] || die "解析结果为空"
+  KERNEL_TAG="$tag"
+  export KERNEL_TAG
+  info "已锁定 tag: ${KERNEL_TAG}"
+}
+
 sync_kernel() {
   log "同步 GKI 内核源码: ${MANIFEST_BRANCH}"
+  resolve_kernel_release
   mkdir -p "$KROOT"
   cd "$KROOT"
 
@@ -162,6 +206,11 @@ sync_kernel() {
   local ver
   ver="$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3} END{printf "%s.%s.%s", v, p, s}' "$COMMON/Makefile")"
   log "内核源码版本: ${ver}"
+
+  if [ -n "$KERNEL_RELEASE" ] && [ "$ver" != "$KERNEL_RELEASE" ]; then
+    die "源码版本 ${ver} 与目标 ${KERNEL_RELEASE} 不符（tag 锁定未生效？）"
+  fi
+
   SOURCE_KERNEL_VERSION="$ver"
   SOURCE_KERNEL_VERSION_MM="$(printf '%s' "$ver" | cut -d. -f1,2)"
   export SOURCE_KERNEL_VERSION SOURCE_KERNEL_VERSION_MM
@@ -174,9 +223,13 @@ sync_kernel() {
 # ---------------------------------------------------------------------------
 pin_kernel_version() {
   [ -n "$STOCK_KERNEL_VERSION" ] || return 0
+  if [ -n "$KERNEL_RELEASE" ]; then
+    warn "已按 kernel_release=${KERNEL_RELEASE} 构建真实源码，忽略 stock_kernel_version=${STOCK_KERNEL_VERSION}"
+    return 0
+  fi
   log "版本对齐: 把内核版本改为 ${STOCK_KERNEL_VERSION}"
   warn "这是一种 hack：只有当厂商 vendor_dlkm 模块因 vermagic 不匹配而拒绝加载时才需要。"
-  python3 "$SCRIPT_DIR/py/version_pin.py" "$COMMON/Makefile" "$STOCK_KERNEL_VERSION"
+  "${PY_BIN:-python3}" "$SCRIPT_DIR/py/version_pin.py" "$COMMON/Makefile" "$STOCK_KERNEL_VERSION"
 }
 
 # ---------------------------------------------------------------------------

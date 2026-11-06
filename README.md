@@ -15,7 +15,7 @@
 2. **内核来自 Google ACK 的 GKI 6.6 源码，不是小米私有的 msm-kernel 树。**
    小米开源的 `warsaw-w-oss` 分支是 Qualcomm kernel_platform 里的 `msm-kernel` 部分，它的 Bazel 定义（`msm_kernel_la.bzl`）明确写着 `base_kernel = "//common:kernel_aarch64"` —— 也就是说设备 boot 里的内核主体本来就是 GKI，小米那边编译的是同一份 ACK + vendor 模块。本仓库等价地直接构建这份 GKI，因此不需要（也无法）单独构建小米的 msm-kernel。
 3. **KMI 必须匹配。** 出厂固件是 6.6 + 4k 页，对应的 GKI 线是 `android15-6.6`（ACK 没有 `android16-6.6` 分支，Android 16 的 6.6 设备继续用这条线）。默认值已经按这个设置好，**不要**随便改成 6.1 / 6.12。
-4. **vendor_dlkm 里的厂商模块不一定兼容所有 sublevel。** 如果刷完出现相机/WiFi/指纹异常或模块加载失败，用 `stock_kernel_version` 选项把内核版本对齐到出厂版本（例如 `6.6.57`）再试。
+4. **用手机的内核版本构建，不要用分支最新。** 填 `kernel_release=6.6.118`（换成你自己 `adb shell uname -r` 的版本），仓库会自动把源码锁定到同版本的 ACK 发布 tag。原因见 [源码版本](#源码版本必须与手机一致kernel_release)。
 
 ---
 
@@ -143,7 +143,8 @@ bash scripts/check-device.sh
 | `config_mode` | `overlay` | 配置来源。`device` = 用出厂配置（最稳），`pristine` = 零改动（排查用） |
 | `lto` | `thin` | 官方 GKI release 用的就是 thin；`none` 更快但内核二进制与官方不同 |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
-| `kernel_tag` | 空 | 钉到某个不可变 ACK tag（如 `android15-6.6-2025-06`），只影响 `common` 仓库 |
+| `kernel_release` | 空 | **推荐填**，例如 `6.6.118`。自动解析出同版本的 ACK 发布 tag 并锁定源码 |
+| `kernel_tag` | 空 | 直接钉到某个不可变 ACK tag（如 `android15-6.6-2025-12_r3`），填了就忽略 `kernel_release` |
 | `stock_kernel_version` | 空 | 版本对齐 hack，见下文 |
 | `susfs_branch` | `gki-android15-6.6` | 换 SUSFS 分支时同步改 |
 | `brand` | `K90Ultra` | 只影响产物命名，不改内核版本号（避免破坏 KMI） |
@@ -161,6 +162,32 @@ bash scripts/check-device.sh
 "最新版本"都会随机落到某个管理器上，容易让人下错包。
 
 发布是每个 job 各自做的：某个管理器编译失败只影响它自己那一份，不会挡住其它管理器的包照常发布（矩阵是 `fail-fast: false`）。
+
+#### 源码版本必须与手机一致（`kernel_release`）
+
+GKI 保证「同一 KMI 代次的内核可以互换」，具体做法是**冻结导出符号的 CRC**——但冻结范围是
+Google 的 `abi_gki_aarch64` 白名单。厂商往白名单里追加的符号（`abi_gki_aarch64_qcom`、
+`abi_gki_aarch64_xiaomi`，413 项）**没有这个保证**。
+
+符号 CRC 由类型签名算出（`struct` 布局、函数原型都会影响）。所以：
+
+- 分支 HEAD 是 6.6.144，手机是 6.6.118 → 中间几十个 stable 合并，只要有一处改了被导出符号的
+  类型，CRC 就变了；
+- 变了之后，`vendor_boot` ramdisk 里的 ufs/ufs-phy/rpmh 这些**一阶段模块**会全部
+  `disagrees about version of symbol` 而拒绝加载；
+- 一阶段模块起不来 → init 挂不到 `/system` → **卡在开机 logo，不 panic、不重启**。
+
+这就是为什么不要拿分支最新去刷一台固定版本的机器。填 `kernel_release` 后，
+`scripts/py/resolve_kernel_tag.py` 会做这几件事：
+
+1. `git ls-remote` 列出 `android15-6.6*` 的发布 tag（`android15-6.6.118_r00` 这种按版本命名的，
+   或 `android15-6.6-2025-12_r3` 这种按月的）；
+2. 直接命中按版本命名的 tag 就用它；否则按月**从新到旧**逐个读 `Makefile` 的 `SUBLEVEL`；
+3. 找到 `SUBLEVEL` 等于目标版本的 tag 后，把清单里 `common` 的 revision 钉到
+   `refs/tags/<tag>`，再 `repo sync`；
+4. 同步完**回读** `common/Makefile`，版本对不上就直接中断，不会产出「版本悄悄不对」的包。
+
+想手动指定（解析失败时）就直接填 `kernel_tag`，错误信息里会列出探测到的月份与版本。
 
 #### 关于 `stock_kernel_version`
 
