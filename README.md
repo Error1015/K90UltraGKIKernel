@@ -41,6 +41,35 @@ adb pull /sdcard/stock_boot.img
 
 启用 SUSFS 时，额外安装 [susfs4ksu-module](https://github.com/sidex15/susfs4ksu-module) 才能用全部隐藏功能（`sus_path`、`sus_mount` 等）。
 
+### 刷机前自检（建议先做）
+
+产物是一个内核二进制，刷错位置的代价很高。可以先在电脑上做两件事，都不碰手机：
+
+```bash
+# 1) 静态体检：头部结构、页大小、内嵌 .config、KSU/SUSFS 是否真的编进去了
+bash scripts/verify-image.sh K90Ultra-GKI-....zip --expect-root --expect-susfs
+```
+
+它会从 Image 里解出内嵌的 `.config`（`CONFIG_IKCONFIG`）逐项核对，输出形如：
+
+```
+=== 4. 与 vendor_dlkm 模块的兼容性 ===
+  [OK]   CONFIG_MODVERSIONS=y —— 模块加载时内核会忽略 vermagic 里的版本前缀 …
+  [OK]   CONFIG_ARM64_4K_PAGES=y
+=== 5. 功能是否真的编进内核 ===
+  [OK]   CONFIG_KSU=y
+  [OK]   KernelSU 钩子方式: kprobes
+  [OK]   CONFIG_KSU_SUSFS=y，子功能开启 9 项
+```
+
+```text
+2) 真实启动：Actions → Verify Image → Run workflow
+   默认会拿最新 Release 的 zip，在 QEMU 里把 Image 启动一次
+   （没有 rootfs，正常结果是跑到 VFS panic —— 说明内核主体能跑）
+```
+
+如果想在**真机**上先验证再决定要不要刷：`fastboot boot <临时 boot.img>` 只在内存里启动一次，重启即恢复原样，不动 flash。需要先把 Image 塞回一份 boot 镜像（可以用 AK3 包里的 `tools/magiskboot` 处理出厂 boot.img）。
+
 > 每个 root 管理器都有自己的签名校验，**内核里集成的是哪一个，就必须装哪一个的管理器 APK**，装错了会显示"未安装"。
 
 | 内核选项 | 需要安装的管理器 |
@@ -96,9 +125,13 @@ adb pull /sdcard/stock_boot.img
 
 #### 关于 `stock_kernel_version`
 
-厂商 vendor 模块的 `vermagic` 里带完整版本号（如 `6.6.57-android15-6.6-4k`）。如果你的固件版本比 ACK LTS 落后很多，可能出现 `version magic mismatch` 导致模块不加载。填 `6.6.57` 会把 Makefile 的 `SUBLEVEL` 改成 57，让 UTS_RELEASE 与出厂一致。
+先说结论：**大多数情况不需要它，留空即可。**
 
-这是权宜之计：代码仍是新版，只是版本号对齐。**正常情况下留空**，先用默认设置试，真出问题再开。
+`vermagic` 的格式是 `<内核版本> SMP preempt mod_unload modversions aarch64`。GKI 内核开了 `CONFIG_MODVERSIONS=y`，加载模块时只会比较**第一个空格之后**的部分（源码注释原文：`First part is kernel version, which we ignore if module has crcs.`，见 `kernel/module/version.c`）。也就是说 6.6.118 与出厂的 6.6.57 之间、甚至版本号里的 `-maybe-dirty` 都不影响厂商模块加载 —— 真正起保护作用的是每个导出符号的 CRC（KMI 约定）。
+
+所以这个开关只在极端情况下有意义：比如你关掉了 `CONFIG_MODVERSIONS`，或者某个模块没带 CRC 导致走了严格比较。填 `6.6.57` 会把 Makefile 的 `SUBLEVEL` 改成 57 让 UTS_RELEASE 与出厂一致，代价是版本号和真实代码不再对应。
+
+真正需要担心的是 `disagrees about version of symbol xxx` 这类报错 —— 那是符号 CRC 变了，改版本号救不了，得换回出厂同代的 GKI 源码（用 `kernel_tag` 钉住对应 ACK tag）。
 
 ---
 
@@ -130,16 +163,19 @@ package.sh  → AnyKernel3(gki-2.0) → 放入 Image → zip → 生成 build-in
 ## 五、目录结构
 
 ```
-.github/workflows/build.yml   # 唯一的入口，所有选项都在这里
+.github/workflows/build.yml   # 唯一的构建入口，所有选项都在这里
+.github/workflows/verify.yml  # 刷机前体检：静态检查 + QEMU 启动冒烟测试
 config/
   base.config                 # 每次构建都会应用（overlayfs/tmpfs/kallsyms/fanotify、关 WERROR）
   root/*.config               # 各 root 管理器的 CONFIG_KSU 与专属开关
   features/*.config           # SUSFS / NoMount / BBG / DroidSpaces / Networking / NTSync / BPF
 scripts/
   lib.sh                      # 日志、重试、配置写入与回读、补丁应用
-  prepare.sh                  # 同步源码 + 集成 root/补丁 + 写配置
+  prepare.sh                  # 同步源码 + 集成 root/补丁 + 写配置 + 提交源码树
   build.sh                    # Kleaf 构建 + 产物校验
   package.sh                  # AnyKernel3 打包 + 构建说明
+  verify-image.sh             # 刷机前体检入口（可离线跑）
+  py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
   py/susfs_66_compat.py       # SUSFS 在 6.6 上的编译适配
 ```
@@ -169,9 +205,11 @@ googlesource 偶发限速。workflow 已经内置 3 次重试与低速中断（<
 2. 在 `scripts/prepare.sh` 对应的 compat 步骤里补一个 sed/python 适配（参考 `scripts/py/susfs_66_compat.py` 的写法）。
 
 **刷完开不了机 / 卡第一屏**
-- 大概率是 KMI 或页大小不匹配：确认 `page_size=4k`、`manifest_branch` 是 6.6 线；
+- 大概率是页大小或 KMI 代次不对：确认 `page_size=4k`、`manifest_branch` 是 6.6 线；
 - 用 fastboot 刷回备份的 boot：`fastboot flash boot stock_boot.img`；
-- 如果只有 vendor 模块报错（相机/WiFi 没了），试 `stock_kernel_version=<出厂版本>`。
+- 如果能进系统但相机/WiFi 没了，抓 `adb shell dmesg | grep -iE "disagrees about version|version magic"`：
+  - 报 `disagrees about version of symbol` → 符号 CRC 变了，用 `kernel_tag` 把源码钉到与出厂同代的 ACK tag 重新构建；
+  - 报 `version magic ... should be ...` → 说明 MODVERSIONS 那条忽略版本前缀的路径没生效，这时才需要 `stock_kernel_version`。
 
 **管理器显示"未安装"**
 内核里集成的管理器和你装的 APK 签名不匹配。按上面第三节的表格装对应的管理器；`bakasu` 还额外关掉了多管理器支持，只能用 BakaSU 自己的 APK。

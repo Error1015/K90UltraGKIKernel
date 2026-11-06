@@ -1,0 +1,115 @@
+name: Verify Image
+
+# 刷机前体检：对某个 Release 产物做静态检查 + QEMU 启动冒烟测试
+# 手动触发：Actions → Verify Image → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset_url:
+        description: "要检查的 zip 下载地址（留空 = 最新 Release 的第一个 zip）"
+        type: string
+        default: ""
+      boot_test:
+        description: "在 QEMU 里真实启动一次内核（证明它能跑起来）"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip qemu-system-arm
+
+      - name: 获取产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_URL: ${{ inputs.asset_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p dl
+          if [ -n "$ASSET_URL" ]; then
+            curl -fsSL --retry 5 --retry-all-errors -o dl/pkg.zip "$ASSET_URL"
+          else
+            # 默认取最新 Release 里的第一个 zip
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir dl --clobber
+            first="$(ls dl/*.zip | head -n1)"
+            [ -n "$first" ] || { echo "最新 Release 里没有 zip" >&2; exit 1; }
+            [ "$first" = "dl/pkg.zip" ] || mv "$first" dl/pkg.zip
+          fi
+          ls -l dl/pkg.zip
+          unzip -q dl/pkg.zip -d dl/ak3
+          ls -l dl/ak3/Image
+
+      - name: 静态体检
+        run: bash scripts/verify-image.sh dl/pkg.zip --expect-root --expect-susfs | tee verify.log
+
+      - name: QEMU 启动冒烟测试
+        if: ${{ inputs.boot_test }}
+        run: |
+          set -euo pipefail
+          echo "在 QEMU virt 上启动 Image（没有 rootfs，正常结果是跑到 VFS panic）"
+          timeout 150 qemu-system-aarch64 \
+            -M virt -cpu max -m 2048 -smp 2 -nographic -no-reboot \
+            -kernel dl/ak3/Image \
+            -append "console=ttyAMA0 earlycon=pl011,0x09000000 panic=-1 loglevel=7" \
+            > qemu.log 2>&1 || true
+
+          echo "--- 启动日志尾部 ---"
+          tail -n 40 qemu.log || true
+
+          if ! grep -q "Booting Linux on physical CPU" qemu.log; then
+            echo "::error::内核没有执行到启动阶段，QEMU 日志见工件"
+            exit 1
+          fi
+          echo "  [OK] 内核已开始执行（Booting Linux on physical CPU）"
+
+          if grep -qE "Run /init as init process|Freeing unused kernel memory|Kernel panic" qemu.log; then
+            echo "  [OK] 内核初始化完成（进入 init 或按预期在无 rootfs 时 panic）"
+          else
+            echo "::error::内核在初始化过程中停住，没有走到 init 阶段"
+            exit 1
+          fi
+
+          if grep -qiE "Unable to handle kernel|BUG: |Oops|Kernel panic - not syncing: Attempted to kill init" qemu.log; then
+            echo "::warning::启动日志里出现异常（详见 qemu.log）"
+          fi
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: |
+            verify.log
+            qemu.log
+          if-no-files-found: ignore
+
+      - name: 写入摘要
+        if: always()
+        run: |
+          {
+            echo "### 体检结果"
+            echo
+            echo '```'
+            cat verify.log 2>/dev/null | tail -n 60 || echo "（没有静态检查输出）"
+            echo '```'
+            if [ -f qemu.log ]; then
+              echo "### QEMU 启动日志（尾部）"
+              echo '```'
+              tail -n 40 qemu.log
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

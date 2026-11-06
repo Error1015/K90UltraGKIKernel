@@ -418,6 +418,35 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# 7. 收尾：把源码树的改动提交掉
+#    Kleaf 用 scripts/setlocalversion 生成版本号，工作区有未提交改动时会追加
+#    "-maybe-dirty"，uname -r 会变成 6.6.x-android15-8-maybe-dirty-4k 这种丑样子。
+#    提交一次即可保持干净（内容不变，只是让 git 状态干净）。
+# ---------------------------------------------------------------------------
+finalize_tree() {
+  log "提交源码树改动，避免版本号带 -maybe-dirty"
+  cd "$COMMON"
+  if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    warn "$COMMON 不是 git 仓库，跳过"
+    return 0
+  fi
+  # NoMount 等工具会把代码 clone 进源码树，别把它们塞进这次提交
+  grep -qxF 'NoMount' .git/info/exclude 2>/dev/null || echo 'NoMount' >> .git/info/exclude
+
+  git add -A
+  if git diff --cached --quiet; then
+    info "没有需要提交的改动"
+    return 0
+  fi
+  if git -c user.name="k90-ci" -c user.email="k90-ci@localhost" \
+       commit -q -m "ci: apply kernel patches and config for build"; then
+    info "已提交: $(git rev-parse --short HEAD)"
+  else
+    warn "提交失败，版本号可能带 -maybe-dirty（不影响功能）"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 main() {
   summary
   cleanup_rejects
@@ -435,6 +464,7 @@ main() {
   setup_ptrace
   setup_unicode
   apply_configs
+  finalize_tree
 
   cleanup_rejects
 

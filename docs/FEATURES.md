@@ -133,8 +133,29 @@ NoMount 与 Mountify 都是"元模块（metamodule）"路线，二选一即可�
 
 ## 版本对齐（`stock_kernel_version`）
 
-内核 `vermagic` 由 `UTS_RELEASE`（`6.6.57-android15-6.6-4k` 这种形式）决定，厂商 vendor 模块在加载时会比对它。填了 `stock_kernel_version=6.6.57` 时，`scripts/py/version_pin.py` 会把 `common/Makefile` 的 `SUBLEVEL` 改成 57。
+`vermagic` 的完整形式是 `<UTS_RELEASE> SMP preempt mod_unload modversions aarch64`。GKI 内核开了
+`CONFIG_MODVERSIONS=y`，模块加载时走 `same_magic()` 的 "有 CRC" 分支，**只比较第一个空格之后的部分**：
 
-- 好处：模块 vermagic 与出厂一致，避免 `version magic mismatch`；
-- 代价：版本号与真实代码不再对应，排查问题时要记得这一点；
-- 结论：**默认不要开**，只在确认是 vermagic 问题导致模块不加载时打开。
+```c
+/* kernel/module/version.c */
+/* First part is kernel version, which we ignore if module has crcs. */
+int same_magic(const char *amagic, const char *bmagic, bool has_crcs)
+{
+	if (has_crcs) {
+		amagic += strcspn(amagic, " ");
+		bmagic += strcspn(bmagic, " ");
+	}
+	return strcmp(amagic, bmagic) == 0;
+}
+```
+
+结论：
+
+- 6.6.118 与出厂的 6.6.57 之间、版本号里带 `-maybe-dirty`，**都不影响厂商模块加载**；
+- 真正决定能不能加载的是导出符号的 CRC（`disagrees about version of symbol xxx` 才是致命错误）；
+- 所以 `stock_kernel_version` 属于"基本用不上"的开关，只在关掉 MODVERSIONS 或模块不带 CRC 时才有意义。
+
+真正需要严格对齐版本的场景，应该用 `kernel_tag` 把源码钉到与出厂同代的 ACK tag。
+
+> 构建时源码树有未提交改动会让 `scripts/setlocalversion` 追加 `-maybe-dirty`。`prepare.sh`
+> 结束前会把改动提交掉（`finalize_tree`），所以正常产物的 release 字符串是干净的 `6.6.x-android15-8-4k`。
