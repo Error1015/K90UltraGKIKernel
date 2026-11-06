@@ -83,6 +83,10 @@ hit 'dm-verity|avb|verified boot|orange' 'AVB / dm-verity'
 hit 'init: |Init encountered'           'init 阶段报错'
 
 echo
+log "这几条日志分别来自哪个内核"
+grep -a -o 'Linux version [^ ]*' "$DEST" 2>/dev/null | sort -u | sed 's/^/    /'
+echo "    如果上面出现的是你刷进去的版本（不是 6.6.118 原厂），说明失败那轮内核确实跑起来了。"
+
 log "结论"
 if grep -q -a 'unknown symbol in module' "$DEST"; then
   warn "厂商模块需要的符号没被导出 —— 需要放宽导出符号裁剪（或补上对应 abi 符号表）"
