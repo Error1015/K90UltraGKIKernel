@@ -14,7 +14,15 @@ SUSFS_ON="${SUSFS:-false}"
 
 cd "$KROOT"
 
+# LTO：官方 GKI release 走 thin。--config=fast 自己会把 LTO 关成 none，
+# 所以 --lto 必须排在 --config=fast **之后**才能覆盖它。
+LTO="${LTO:-thin}"
 ARGS=(--config=fast)
+case "$LTO" in
+  thin|full) ARGS+=(--lto="$LTO") ;;
+  none)      ARGS+=(--lto=none) ;;
+  *)         die "不支持的 LTO: $LTO（可选 thin / full / none）" ;;
+esac
 case "$PAGE_SIZE" in
   4k)   ;;
   16k)  ARGS+=(--page_size=16k) ;;
@@ -108,5 +116,19 @@ KERNEL_RELEASE="$(grep -a -o -m1 'Linux version [^ ]*' "$OUT/Image" | awk '{prin
 info "内核 release 字符串: $KERNEL_RELEASE"
 echo "$KERNEL_RELEASE" > "$OUT/kernel-release.txt"
 echo "KERNEL_RELEASE=${KERNEL_RELEASE}" >> "${GITHUB_ENV:-/dev/null}"
+
+# ---------------------------------------------------------------------------
+# 与出厂配置做 ABI 对齐检查（有 config/device/gki_defconfig 时才做）
+# ---------------------------------------------------------------------------
+DEVICE_CFG="$WS/config/device/gki_defconfig"
+if [ -s "$DEVICE_CFG" ]; then
+  log "与出厂配置比对 ABI 敏感项"
+  if ! python3 "$WS/scripts/py/check_config_parity.py" "$OUT/kernel.config" "$DEVICE_CFG" --strict; then
+    die "ABI 敏感项与出厂不一致，终止打包（厂商模块会全部加载失败）"
+  fi
+else
+  warn "没有 config/device/gki_defconfig，跳过出厂 ABI 比对"
+  warn "建议先跑 scripts/get-device-config.sh 把出厂配置取回来"
+fi
 
 log "编译完成"

@@ -141,6 +141,7 @@ bash scripts/check-device.sh
 | `root_manager` | `all` | 见上一节。`all` = 所有管理器各出一个包 |
 | `page_size` | `4k` | 小米 `build.config.msm.sun` 里写死 `PAGE_SIZE=4096`，K90 Ultra 就是 4K |
 | `config_mode` | `overlay` | 配置来源。`device` = 用出厂配置（最稳），`pristine` = 零改动（排查用） |
+| `lto` | `thin` | 官方 GKI release 用的就是 thin；`none` 更快但内核二进制与官方不同 |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
 | `kernel_tag` | 空 | 钉到某个不可变 ACK tag（如 `android15-6.6-2025-06`），只影响 `common` 仓库 |
 | `stock_kernel_version` | 空 | 版本对齐 hack，见下文 |
@@ -219,6 +220,7 @@ scripts/
   check-device.sh             # 连手机只读自检：LKM 残留 / 页大小 / KMI / KSU 状态
   get-device-config.sh        # 连手机把出厂 /proc/config.gz 取回来 -> config/device/gki_defconfig
   get-last-log.sh             # 连手机抓上一次卡住那轮开机的 ramoops 日志并直接给结论
+  py/check_config_parity.py   # 产物 config 与出厂 config 的 ABI 敏感项比对（构建时自动跑）
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
@@ -391,6 +393,11 @@ bash scripts/get-last-log.sh      # 抓 pstore、自动标出关键证据并给�
 bash scripts/get-device-config.sh          # 读 /proc/config.gz -> config/device/gki_defconfig
 git add config/device/gki_defconfig && git commit -m "config: 加入 warsaw 出厂内核配置"
 ```
+
+仓库里放了 `config/device/gki_defconfig` 之后，**每次构建都会自动做 ABI 对齐检查**：
+`scripts/py/check_config_parity.py` 拿产物的 `.config` 和出厂配置逐项比，只盯 ABI 敏感项
+（`MODVERSIONS` / `MODULE_SIG*` / `LTO*` / `CFI*` / 页大小 / `VA_BITS` / `TRIM_UNUSED_KSYMS` …），
+有一项不同就**直接终止构建**，不会打包出"看着正常但厂商模块全加载不了"的包。
 
 用出厂配置的意义：内核的 `CONFIG_*` 决定了 `struct` 布局，进而决定导出符号的 CRC。
 厂商的 `vendor_dlkm` / `system_dlkm` 模块是按出厂配置编的，配置只要在 ABI 敏感项上偏了一点，

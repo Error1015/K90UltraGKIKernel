@@ -42,6 +42,16 @@ on:
         type: string
         default: ""
 
+      lto:
+        description: "LTO 模式。官方 GKI release 用 thin（最接近出厂）；none 编得更快但内核二进制与官方不同"
+        type: choice
+        required: true
+        default: thin
+        options:
+          - thin
+          - full
+          - none
+
       config_mode:
         description: "配置来源：overlay = 在官方 gki_defconfig 上叠加本仓库的开关；device = 直接用 config/device/gki_defconfig（手机出厂配置）；pristine = 一个字都不改，纯 ACK 参考内核（配合 preset=vanilla 排查）"
         type: choice
@@ -259,6 +269,7 @@ jobs:
       UNICODE_FIX: ${{ inputs.unicode_fix }}
       BPF: ${{ inputs.bpf }}
       CONFIG_MODE: ${{ inputs.config_mode }}
+      LTO: ${{ inputs.lto }}
       PAGE_SIZE: ${{ inputs.page_size }}
       MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
       KERNEL_TAG: ${{ inputs.kernel_tag }}
