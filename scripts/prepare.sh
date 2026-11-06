@@ -36,6 +36,7 @@ DROIDSPACES_REPO="${DROIDSPACES_REPO:-https://github.com/ravindu644/Droidspaces-
 DROIDSPACES_REF="${DROIDSPACES_REF:-}"
 
 ALLOW_PATCH_FUZZ="${ALLOW_PATCH_FUZZ:-true}"
+PRESET="${PRESET:-safe}"
 
 SUSFS_ON="${SUSFS:-false}"
 NOMOUNT_ON="${NOMOUNT:-false}"
@@ -49,8 +50,37 @@ BPF_ON="${BPF:-false}"
 
 export ALLOW_PATCH_FUZZ
 
+# ---------------------------------------------------------------------------
+# 预设：把"高风险补丁组合"收口，避免一次引入太多变量导致卡标难以定位
+#   safe    —— 只保留 root + SUSFS（社区验证最充分的组合），其余强制关闭
+#   full    —— 完全按开关走
+#   vanilla —— 不集成 root、不加任何补丁，用来单独验证"基础 GKI 内核能不能启动"
+# ---------------------------------------------------------------------------
+resolve_preset() {
+  case "$PRESET" in
+    vanilla)
+      warn "preset=vanilla：不集成 root 与任何功能补丁，用于验证基础 GKI 内核"
+      ROOT_MANAGER="none"
+      SUSFS_ON=false; NOMOUNT_ON=false; BBG_ON=false; DROIDSPACES_ON=false
+      NETWORKING_ON=false; NTSYNC_ON=false; PTRACE_ON=false; UNICODE_ON=false; BPF_ON=false
+      ;;
+    safe)
+      info "preset=safe：保留 root + SUSFS，其余功能补丁强制关闭"
+      NOMOUNT_ON=false; BBG_ON=false; DROIDSPACES_ON=false
+      NETWORKING_ON=false; NTSYNC_ON=false; PTRACE_ON=false; UNICODE_ON=false; BPF_ON=false
+      ;;
+    full)
+      info "preset=full：按开关全量构建"
+      ;;
+    *)
+      die "未知 preset: $PRESET（可选 safe / full / vanilla）"
+      ;;
+  esac
+}
+
 summary() {
   log "构建选项"
+  info "预设          : ${PRESET}"
   info "目标设备      : Redmi K90 Ultra (warsaw / SM8750, ${ANDROID_VERSION}-${KERNEL_VERSION})"
   info "Root 管理器   : ${ROOT_MANAGER}${ROOT_REF:+ (ref: $ROOT_REF)}"
   info "SUSFS         : ${SUSFS_ON} (branch: ${SUSFS_BRANCH})"
@@ -448,6 +478,7 @@ finalize_tree() {
 
 # ---------------------------------------------------------------------------
 main() {
+  resolve_preset
   summary
   cleanup_rejects
 

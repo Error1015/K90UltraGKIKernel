@@ -33,11 +33,17 @@
 adb shell su -c 'dd if=/dev/block/by-name/boot of=/sdcard/stock_boot.img'
 adb pull /sdcard/stock_boot.img
 
-# 2) 刷入
-#    推荐：在已 root 的系统里用 KernelSU 管理器的"安装 → 选择本地文件"刷 zip；
-#    或者进 recovery 直接刷 zip。
-#    刷完重启，再安装与内核匹配的管理器 APK。
+# 2) 刷入 —— 二选一
+#    a. recovery（TWRP 等）里直接刷这个 zip；
+#    b. 或者用 magiskboot 把 Image 塞回官方 boot.img，再 fastboot 刷：
+#         magiskboot unpack stock_boot.img
+#         cp Image kernel
+#         magiskboot repack stock_boot.img new_boot.img
+#         fastboot flash boot new_boot.img
 ```
+
+> ⚠️ **不要** `fastboot flash boot xxx.zip`，也**不要**把 zip 里的 `Image` 直接
+> `fastboot flash boot Image`。boot 分区不是裸内核，写进去必然卡 logo（见第六节）。
 
 启用 SUSFS 时，额外安装 [susfs4ksu-module](https://github.com/sidex15/susfs4ksu-module) 才能用全部隐藏功能（`sus_path`、`sus_mount` 等）。
 
@@ -115,6 +121,7 @@ bash scripts/verify-image.sh K90Ultra-GKI-....zip --expect-root --expect-susfs
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
+| `preset` | `safe` | `safe` = 只留 root + SUSFS；`full` = 按开关全量；`vanilla` = 什么都不加，验证基础内核 |
 | `page_size` | `4k` | 出厂是 4k。16k 只在确定设备是 16k 时才选 |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
 | `kernel_tag` | 空 | 钉到某个不可变 ACK tag（如 `android15-6.6-2025-06`），只影响 `common` 仓库 |
@@ -194,7 +201,60 @@ scripts/
 
 ---
 
-## 六、常见问题
+## 六、刷入后卡标（Redmi logo）怎么排查
+
+卡在 logo 说明**要么内核没跑起来，要么内核跑起来了但 Android 起不来**。按下面顺序排，别重复盲刷。
+
+### 0. 先救砖
+
+1. **有 boot 备份**：`fastboot flash boot stock_boot.img`
+2. **A/B 设备没备份**：切到另一个槽再试 —— `fastboot --set-active=a`（或 `b`），重启
+3. **都没有**：下载对应版本的 fastboot 线刷包，只解出 `images/boot.img`，然后 `fastboot flash boot boot.img`（先别整包刷，保住数据）
+
+### 1. 先确认刷入方式对不对（最常见的坑）
+
+AnyKernel3 的 zip 是给 **recovery / root 管理器**用的，**不是 fastboot 镜像**：
+
+| 做法 | 结果 |
+| --- | --- |
+| `fastboot flash boot xxx.zip` | ❌ 把 zip 原样写进 boot 分区，必然卡标 |
+| `fastboot flash boot Image` | ❌ boot 分区没有 boot header / ramdisk，必然卡标 |
+| recovery 里刷 zip | ✅ |
+| `magiskboot repack` 后 `fastboot flash boot new_boot.img` | ✅ |
+
+`magiskboot` 可以从 Magisk 官方 APK 里取（`lib/arm64-v8a/libmagiskboot.so` 改名为 `magiskboot`），
+或者用 [MagiskOnWSA/magiskboot 的 PC 构建](https://github.com/1nnovat1on/magiskboot)。
+
+### 2. 拿内核自己的说法：pstore
+
+内核崩溃/卡死时会把 console 写进 ramoops。**回到原系统后**能读上一次失败的日志：
+
+```bash
+adb shell su -c 'ls -l /sys/fs/pstore/'
+adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
+```
+
+对照症状：
+
+| 日志里看到 | 结论 | 处理 |
+| --- | --- | --- |
+| `unknown symbol in module` | 厂商模块要的符号被裁掉了 | 本仓库已加 `CONFIG_TRIM_UNUSED_KSYMS=n` 全量导出，重新构建即可 |
+| `disagrees about version of symbol` | 符号 CRC 与厂商模块不一致 | 用与出厂一致的 `manifest_branch`/`kernel_tag` 重编 |
+| 一段 `Unable to handle kernel paging request` / `BUG:` 栈 | 内核代码问题，通常是某个功能补丁 | 按第 3 步二分 |
+| 什么都没有 | 内核根本没跑起来（刷入方式 / AVB / boot header） | 回到第 1 步 |
+
+### 3. 二分定位：用 `preset` 把变量降到最少
+
+| 构建 | 内容 | 用途 |
+| --- | --- | --- |
+| `preset=vanilla` | 纯 GKI，不集成 root、不加任何补丁 | 先证明"基础内核能启动" |
+| `preset=safe` | root + SUSFS（社区验证最充分的组合） | 证明 root 方案可用 |
+| `preset=full` | 全量 | 出问题就逐个关开关，定位到具体补丁 |
+
+顺序建议：**vanilla → safe → full**，每次只加一层。NoMount 与 BBG 都会改 VFS / 块设备层，
+是最容易"内核活着但 Android 起不来"的两个，建议最后再加。
+
+## 七、常见问题
 
 **构建在 `repo sync` 阶段失败**
 googlesource 偶发限速。workflow 已经内置 3 次重试与低速中断（<1KB/s 持续 60s 直接断开重连）。多次失败可改用 `kernel_tag` 钉到一个已发布的 tag。
@@ -223,7 +283,7 @@ googlesource 偶发限速。workflow 已经内置 3 次重试与低速中断（<
 
 ---
 
-## 七、维护与更新
+## 八、维护与更新
 
 - **跟进 SUSFS**：`susfs_branch` 保持 `gki-android15-6.6`，默认取分支最新 commit；想锁死就传 `SUSFS_COMMIT`（改 workflow env 或加 input）。
 - **跟进 kernel_patches**：`KERNEL_PATCHES_REF` 默认 `main`。
@@ -232,7 +292,7 @@ googlesource 偶发限速。workflow 已经内置 3 次重试与低速中断（<
 
 ---
 
-## 八、致谢与许可
+## 九、致谢与许可
 
 本仓库只是把下列项目的成果串成流水线：
 

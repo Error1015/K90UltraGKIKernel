@@ -6,6 +6,15 @@ name: Build GKI Kernel
 on:
   workflow_dispatch:
     inputs:
+      preset:
+        description: "构建预设：safe = 只留 root + SUSFS（推荐先验证这个）；full = 按下面的开关全量构建；vanilla = 不集成任何东西，只验证基础内核"
+        type: choice
+        required: true
+        default: safe
+        options:
+          - safe
+          - full
+          - vanilla
       root_manager:
         description: "Root 管理器"
         type: choice
@@ -109,6 +118,7 @@ jobs:
     timeout-minutes: 240
 
     env:
+      PRESET: ${{ inputs.preset }}
       ROOT_MANAGER: ${{ inputs.root_manager }}
       ROOT_REF: ${{ inputs.root_ref }}
       SUSFS: ${{ inputs.susfs }}
