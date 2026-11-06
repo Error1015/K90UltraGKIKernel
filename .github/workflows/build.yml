@@ -15,6 +15,10 @@ on:
           - safe
           - full
           - vanilla
+      variants:
+        description: "想一次并行构建多个预设时填写，逗号分隔（例如 safe,vanilla）；留空则只构建上面的 preset"
+        type: string
+        default: ""
       root_manager:
         description: "Root 管理器"
         type: choice
@@ -112,13 +116,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 把 "preset / variants" 解析成一个数组，让一次运行能并行构建多个变体
+  # （排查卡标时非常有用：safe 与 vanilla 同时出包，一轮就能定性）
+  resolve:
+    name: 解析构建变体
+    runs-on: ubuntu-latest
+    outputs:
+      presets: ${{ steps.parse.outputs.presets }}
+    steps:
+      - name: 解析 preset / variants
+        id: parse
+        shell: bash
+        env:
+          PRESET: ${{ inputs.preset }}
+          VARIANTS: ${{ inputs.variants }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+
+          raw = (os.environ.get("VARIANTS") or "").strip() or os.environ["PRESET"]
+          allowed = {"safe", "full", "vanilla"}
+          items = []
+          for part in raw.split(","):
+              name = part.strip().lower()
+              if not name:
+                  continue
+              if name not in allowed:
+                  raise SystemExit(f"未知预设: {name}（可选 safe / full / vanilla）")
+              if name not in items:
+                  items.append(name)
+          if not items:
+              raise SystemExit("没有解析出任何预设")
+          print(f"将构建: {', '.join(items)}", file=sys.stderr)
+          print(f"presets={json.dumps(items)}")
+          PY
+          cat "$GITHUB_OUTPUT"
+
   build:
-    name: ${{ inputs.root_manager }} / susfs=${{ inputs.susfs }} / ${{ inputs.page_size }}
+    needs: resolve
+    name: ${{ matrix.preset }} / ${{ inputs.root_manager }} / ${{ inputs.page_size }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: ${{ fromJSON(needs.resolve.outputs.presets) }}
 
     env:
-      PRESET: ${{ inputs.preset }}
+      PRESET: ${{ matrix.preset }}
       ROOT_MANAGER: ${{ inputs.root_manager }}
       ROOT_REF: ${{ inputs.root_ref }}
       SUSFS: ${{ inputs.susfs }}
@@ -203,7 +249,7 @@ jobs:
       - name: 上传内核配置与构建说明
         uses: actions/upload-artifact@v4
         with:
-          name: build-config-and-info
+          name: build-config-and-info-${{ matrix.preset }}
           path: |
             out/kernel.config
             out/build-info.md
@@ -213,7 +259,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patch-rejects
+          name: patch-rejects-${{ matrix.preset }}
           path: patch-rejects/
           if-no-files-found: ignore
 

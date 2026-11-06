@@ -225,7 +225,26 @@ AnyKernel3 的 zip 是给 **recovery / root 管理器**用的，**不是 fastboo
 `magiskboot` 可以从 Magisk 官方 APK 里取（`lib/arm64-v8a/libmagiskboot.so` 改名为 `magiskboot`），
 或者用 [MagiskOnWSA/magiskboot 的 PC 构建](https://github.com/1nnovat1on/magiskboot)。
 
-### 2. 拿内核自己的说法：pstore
+### 2. 最快的验证：`fastboot boot` 临时启动（不写分区）
+
+把 Image 塞回一份原始 boot.img，然后**临时启动**它 —— 只在内存里跑一次，重启就恢复原样：
+
+```bash
+magiskboot unpack stock_boot.img
+cp Image kernel
+magiskboot repack stock_boot.img tmp_boot.img
+fastboot boot tmp_boot.img
+```
+
+- 能进系统 → 内核没问题，问题出在"刷进去的那份 boot.img"或刷写目标；
+- 还是卡 logo → 内核侧问题，继续往下看；
+- 起不来就长按电源重启，**什么都没写进 flash**。
+
+> 如果你之前是 **LKM 模式的 root**（管理器里"工作模式"显示 LKM，即 stock 内核 + 补丁过的 init_boot），
+> 刷内核前请先在管理器里"恢复原厂镜像"把 init_boot 还原，否则 ramdisk 里那个 `kernelsu.ko`
+> 会和内核内置的 KSU 打架。
+
+### 3. 拿内核自己的说法：pstore
 
 内核崩溃/卡死时会把 console 写进 ramoops。**回到原系统后**能读上一次失败的日志：
 
@@ -243,7 +262,7 @@ adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
 | 一段 `Unable to handle kernel paging request` / `BUG:` 栈 | 内核代码问题，通常是某个功能补丁 | 按第 3 步二分 |
 | 什么都没有 | 内核根本没跑起来（刷入方式 / AVB / boot header） | 回到第 1 步 |
 
-### 3. 二分定位：用 `preset` 把变量降到最少
+### 4. 二分定位：用 `preset` 把变量降到最少
 
 | 构建 | 内容 | 用途 |
 | --- | --- | --- |
@@ -253,6 +272,9 @@ adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
 
 顺序建议：**vanilla → safe → full**，每次只加一层。NoMount 与 BBG 都会改 VFS / 块设备层，
 是最容易"内核活着但 Android 起不来"的两个，建议最后再加。
+
+嫌一轮一轮太慢可以一次性并行出两个包：`variants` 填 `safe,vanilla`，两个 job 同时跑，
+各自上传独立的 zip / Release，一轮就能判断"是基础内核的问题还是补丁的问题"。
 
 ## 七、常见问题
 

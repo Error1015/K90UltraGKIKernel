@@ -12,6 +12,7 @@ ANYKERNEL3_REPO="${ANYKERNEL3_REPO:-https://github.com/WildKernels/AnyKernel3.gi
 ANYKERNEL3_BRANCH="${ANYKERNEL3_BRANCH:-gki-2.0}"
 BRAND="${BRAND:-K90Ultra}"
 PAGE_SIZE="${PAGE_SIZE:-4k}"
+PRESET="${PRESET:-safe}"
 ROOT_MANAGER="${ROOT_MANAGER:-none}"
 SUSFS_ON="${SUSFS:-false}"
 
@@ -48,7 +49,7 @@ SUSFS_LABEL="nosusfs"
 is_true "$SUSFS_ON" && SUSFS_LABEL="susfs"
 DATE_TAG="$(date -u +%Y%m%d-%H%M)"
 
-ZIP_NAME="${BRAND}-GKI-${KERNEL_RELEASE}-${ROOT_LABEL}-${SUSFS_LABEL}-${PAGE_SIZE}-${DATE_TAG}.zip"
+ZIP_NAME="${BRAND}-GKI-${KERNEL_RELEASE}-${ROOT_LABEL}-${SUSFS_LABEL}-${PRESET}-${PAGE_SIZE}-${DATE_TAG}.zip"
 ZIP_PATH="$OUT/$ZIP_NAME"
 
 log "打包刷机包: $ZIP_NAME"
@@ -57,7 +58,7 @@ info "$(du -h "$ZIP_PATH" | cut -f1)"
 
 echo "ZIP_PATH=${ZIP_PATH}" >> "${GITHUB_ENV:-/dev/null}"
 echo "ZIP_NAME=${ZIP_NAME}" >> "${GITHUB_ENV:-/dev/null}"
-echo "RELEASE_TAG=${BRAND,,}-${ROOT_LABEL}-${KERNEL_RELEASE}-${DATE_TAG}" >> "${GITHUB_ENV:-/dev/null}"
+echo "RELEASE_TAG=${BRAND,,}-${ROOT_LABEL}-${PRESET}-${KERNEL_RELEASE}-${DATE_TAG}" >> "${GITHUB_ENV:-/dev/null}"
 
 # ---------------------------------------------------------------------------
 # 构建说明（同时作为 Release 正文）
@@ -71,6 +72,7 @@ INFO="$OUT/build-info.md"
   echo "| 设备 | Redmi K90 Ultra (warsaw / SM8750) |"
   echo "| 内核版本 | ${KERNEL_RELEASE} |"
   echo "| 页大小 | ${PAGE_SIZE} |"
+  echo "| 构建预设 | ${PRESET} |"
   echo "| Root 管理器 | ${ROOT_MANAGER} |"
   echo "| Root commit | ${ROOT_COMMIT:-未知} |"
   echo "| SUSFS | $([ "$SUSFS_LABEL" = susfs ] && echo "启用 (${SUSFS_COMMIT:-未知})" || echo "未启用") |"
