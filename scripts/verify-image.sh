@@ -32,4 +32,7 @@ case "$target" in
     ;;
 esac
 
-python3 "$SCRIPT_DIR/py/inspect_image.py" "$image" "$@"
+PY_BIN="$(command -v python3 || command -v python || true)"
+[ -n "$PY_BIN" ] || { echo "需要 python3 或 python" >&2; exit 2; }
+
+"$PY_BIN" "$SCRIPT_DIR/py/inspect_image.py" "$image" "$@"

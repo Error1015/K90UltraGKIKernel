@@ -220,6 +220,7 @@ scripts/
   check-device.sh             # 连手机只读自检：LKM 残留 / 页大小 / KMI / KSU 状态
   get-device-config.sh        # 连手机把出厂 /proc/config.gz 取回来 -> config/device/gki_defconfig
   get-last-log.sh             # 连手机抓上一次卡住那轮开机的 ramoops 日志并直接给结论
+  check-abi.sh                # 一条命令比对一个包与出厂配置的 ABI 差异（不构建、不刷机）
   py/check_config_parity.py   # 产物 config 与出厂 config 的 ABI 敏感项比对（构建时自动跑）
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
@@ -393,6 +394,15 @@ bash scripts/get-last-log.sh      # 抓 pstore、自动标出关键证据并给�
 bash scripts/get-device-config.sh          # 读 /proc/config.gz -> config/device/gki_defconfig
 git add config/device/gki_defconfig && git commit -m "config: 加入 warsaw 出厂内核配置"
 ```
+
+拿到出厂配置后，**先别急着重新构建**——可以直接拿已经发布的包离线比对，2 分钟出结论：
+
+```bash
+bash scripts/check-abi.sh K90Ultra-GKI-....zip     # 默认比对 config/device/gki_defconfig
+```
+
+它会导出包里 Image 的内嵌 `.config`，与出厂配置逐项比 ABI 敏感项，并直接给结论：
+一致 → 问题不在 config，别再重编；不一致 → 差异项会逐条列出来。
 
 仓库里放了 `config/device/gki_defconfig` 之后，**每次构建都会自动做 ABI 对齐检查**：
 `scripts/py/check_config_parity.py` 拿产物的 `.config` 和出厂配置逐项比，只盯 ABI 敏感项
