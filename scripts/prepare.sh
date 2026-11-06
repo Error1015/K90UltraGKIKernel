@@ -16,8 +16,9 @@ ROOT_MANAGER="${ROOT_MANAGER:-kernelsu-next}"
 ROOT_REF="${ROOT_REF:-}"
 
 MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
+COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
 MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-2024-12}"
-KERNEL_TAG="${KERNEL_TAG:-}"
+KERNEL_TAG="${KERNEL_TAG:-android15-6.6-2024-12}"
 STOCK_KERNEL_VERSION="${STOCK_KERNEL_VERSION:-}"
 
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
@@ -123,9 +124,21 @@ sync_kernel() {
   local sync_tags="--no-tags"
   if [ -n "$KERNEL_TAG" ]; then
     # 精确锁定到不可变 tag：把 default.xml 里 common 的 revision 换成 tag 全名，
-    # 因为 repo 默认把 revision 当分支名解析。
+    # 因为 repo 默认把 revision 当分支名解析（dated 清单里的 android15-6.6-2024-12
+    # 在 kernel/common 里只有 tag、没有同名分支，直接 fetch 分支会报
+    # "couldn't find remote ref refs/heads/..."）。
     local manifest=".repo/manifests/default.xml"
     [ -f "$manifest" ] || die "找不到 $manifest"
+
+    if ! git ls-remote --tags --exit-code "$COMMON_URL" "refs/tags/${KERNEL_TAG}" > /dev/null 2>&1; then
+      warn "kernel/common 中不存在 tag: ${KERNEL_TAG}"
+      echo "  可用的 6.6 相关 tag（最近的 15 个，挑一个填到 kernel_tag）："
+      git ls-remote --tags "$COMMON_URL" 2>/dev/null \
+        | awk '{print $2}' | sed 's|^refs/tags/||' | grep -v '\^{}' \
+        | grep -E '^android15-6\.6-202[456]' | sort -V | tail -15 | sed 's/^/    /'
+      die "请把 kernel_tag 改成上面列出的某个 tag，或留空用清单分支默认版本"
+    fi
+
     sed -i "/path=\"common\"/ s|revision=\"[^\"]*\"|revision=\"refs/tags/${KERNEL_TAG}\"|" "$manifest"
     grep -q "refs/tags/${KERNEL_TAG}" "$manifest" || die "清单中未找到 path=\"common\"，无法锁定 tag"
     info "已把 common 锁定到 tag: ${KERNEL_TAG}"

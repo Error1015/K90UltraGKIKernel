@@ -93,9 +93,9 @@ on:
         type: string
         default: common-android15-6.6-2024-12
       kernel_tag:
-        description: "锁定到某个 ACK tag（例如 android15-6.6-2025-06，留空 = 分支最新）"
+        description: "锁定到某个 ACK tag（默认 android15-6.6-2024-12 = 6.6.57，与小米 warsaw-w-oss 出厂一致；留空 = 分支最新）"
         type: string
-        default: ""
+        default: android15-6.6-2024-12
       stock_kernel_version:
         description: "版本对齐（例如 6.6.57）：把内核版本改成出厂版本，仅在 vendor 模块 vermagic 不匹配时使用"
         type: string
