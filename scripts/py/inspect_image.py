@@ -251,6 +251,15 @@ def main() -> int:
     expect_root = "--expect-root" in sys.argv
     expect_susfs = "--expect-susfs" in sys.argv
 
+    # --dump-config <路径>：把 Image 里内嵌的 .config 导出来，供与出厂配置比对
+    dump_path = None
+    if "--dump-config" in sys.argv:
+        i = sys.argv.index("--dump-config")
+        if i + 1 >= len(sys.argv):
+            print("--dump-config 需要跟一个输出路径", file=sys.stderr)
+            return 2
+        dump_path = sys.argv[i + 1]
+
     with open(path, "rb") as fh:
         data = fh.read()
 
@@ -258,6 +267,17 @@ def main() -> int:
     check_header(data)
     cfg = extract_config(data)
     values = parse_config(cfg) if cfg else {}
+
+    if dump_path:
+        if not cfg:
+            print("Image 里没有内嵌 .config（CONFIG_IKCONFIG 未开）", file=sys.stderr)
+            return 1
+        with open(dump_path, "w", encoding="utf-8") as fh:
+            fh.write(cfg)
+        print(f"    已导出内嵌 .config -> {dump_path}（{len(cfg)} 字节）")
+        print("    下一步可与出厂配置比对：")
+        print(f"      python3 scripts/py/check_config_parity.py {dump_path} config/device/gki_defconfig")
+        return 0
     if cfg:
         check_version(data, values)
         check_compat(values)
