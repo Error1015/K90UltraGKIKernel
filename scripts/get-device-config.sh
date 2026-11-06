@@ -36,7 +36,10 @@ if [ ! -s "$RAW" ] || ! gzip -t "$RAW" 2>/dev/null; then
 fi
 [ -s "$RAW" ] && gzip -t "$RAW" 2>/dev/null || die "读不到 /proc/config.gz（内核未开 CONFIG_IKCONFIG_PROC，或权限不足）"
 
-python3 - "$RAW" "$DEST" <<'PY'
+PY_BIN="$(command -v python3 || command -v python || true)"
+[ -n "$PY_BIN" ] || die "需要 python3 或 python 才能解压配置"
+
+"$PY_BIN" - "$RAW" "$DEST" <<'PY'
 import gzip, sys, pathlib
 
 raw, dest = sys.argv[1], sys.argv[2]
