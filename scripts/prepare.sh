@@ -39,6 +39,13 @@ DROIDSPACES_REF="${DROIDSPACES_REF:-}"
 ALLOW_PATCH_FUZZ="${ALLOW_PATCH_FUZZ:-true}"
 PRESET="${PRESET:-full}"
 
+# 配置来源：
+#   overlay  —— 在内核自带的 gki_defconfig 上叠加 config/base.config + 各功能开关（默认）
+#   device   —— 直接用设备的出厂配置（config/device/gki_defconfig）替换 gki_defconfig，
+#               只在其上叠加 root/功能项。ABI 与出厂完全一致，用于排查"配置差异导致卡标"
+#   pristine —— 一个字都不改（配合 preset=vanilla 得到纯 ACK 参考内核）
+CONFIG_MODE="${CONFIG_MODE:-overlay}"
+
 SUSFS_ON="${SUSFS:-false}"
 NOMOUNT_ON="${NOMOUNT:-false}"
 BBG_ON="${BBG:-false}"
@@ -95,6 +102,7 @@ summary() {
   info "BTF/eBPF/FUSE : ${BPF_ON}"
   info "源码分支      : ${MANIFEST_BRANCH}${KERNEL_TAG:+ @ $KERNEL_TAG}"
   info "页大小        : ${PAGE_SIZE:-4k}"
+  info "配置来源      : ${CONFIG_MODE}"
 }
 
 # ---------------------------------------------------------------------------
@@ -422,9 +430,25 @@ setup_unicode() {
 # 6. 内核配置
 # ---------------------------------------------------------------------------
 apply_configs() {
-  log "写入内核配置"
+  log "写入内核配置（config_mode=${CONFIG_MODE}）"
 
-  apply_config_file "$WS/config/base.config"
+  case "$CONFIG_MODE" in
+    device)
+      local dev_cfg="$WS/config/device/gki_defconfig"
+      [ -s "$dev_cfg" ] || die "config_mode=device 但缺少 config/device/gki_defconfig（先在电脑上跑 scripts/get-device-config.sh）"
+      cp "$dev_cfg" "$COMMON/$DEFCONFIG_REL"
+      info "已用设备出厂配置替换 gki_defconfig（$(grep -c '^CONFIG_' "$dev_cfg") 项生效、共 $(wc -l < "$dev_cfg") 行）"
+      ;;
+    pristine)
+      warn "config_mode=pristine：不叠加 base.config，得到与官方 GKI 一致的基础内核"
+      ;;
+    overlay | "")
+      apply_config_file "$WS/config/base.config"
+      ;;
+    *)
+      die "未知 config_mode: ${CONFIG_MODE}（可选 overlay / device / pristine）"
+      ;;
+  esac
 
   if [ "$ROOT_MANAGER" != "none" ] && [ -f "$WS/config/root/${ROOT_MANAGER}.config" ]; then
     info "--- Root: ${ROOT_MANAGER} ---"

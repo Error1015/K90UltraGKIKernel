@@ -139,13 +139,27 @@ bash scripts/check-device.sh
 | --- | --- | --- |
 | `preset` | `full` | `full` = 按开关全量构建；`safe` = 只留 root + SUSFS，其余开关强制关闭；`vanilla` = 什么都不加，验证基础内核（此时 root 维度会自动收敛成一份，不会重复构建） |
 | `root_manager` | `all` | 见上一节。`all` = 所有管理器各出一个包 |
-| `page_size` | `4k` | 出厂是 4k。16k 只在确定设备是 16k 时才选 |
+| `page_size` | `4k` | 小米 `build.config.msm.sun` 里写死 `PAGE_SIZE=4096`，K90 Ultra 就是 4K |
+| `config_mode` | `overlay` | 配置来源。`device` = 用出厂配置（最稳），`pristine` = 零改动（排查用） |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
 | `kernel_tag` | 空 | 钉到某个不可变 ACK tag（如 `android15-6.6-2025-06`），只影响 `common` 仓库 |
 | `stock_kernel_version` | 空 | 版本对齐 hack，见下文 |
 | `susfs_branch` | `gki-android15-6.6` | 换 SUSFS 分支时同步改 |
 | `brand` | `K90Ultra` | 只影响产物命名，不改内核版本号（避免破坏 KMI） |
-| `publish_release` | `true` | 构建成功自动发 Release（每个 root 管理器一个），方便手机直接下载 |
+| `release` | `release` | 发布方式：`release` = 正式 Release；`prerelease` = 预发布（GitHub 上打 Pre-release 标记，不会出现在 `/releases/latest`）；`none` = 不发布，只留 Actions Artifacts。每个 root 管理器各一条 Release |
+
+#### 关于 `release`
+
+| 取值 | 行为 |
+| --- | --- |
+| `release` | 构建成功后创建正式 Release（tag 形如 `k90ultra-bakasu-susfs-full-6.6.118-4k-20261106-1230`），带 `build-info.md` 正文 |
+| `prerelease` | 同上，但打上 GitHub 的 **Pre-release** 标记：不会出现在 `/releases/latest`、不会被当成"最新版本"，适合先让少数人试刷 |
+| `none` | 完全不建 Release，产物只留在运行页的 Artifacts（需登录、默认保留 90 天） |
+
+一次运行会出多个包（每个 root 管理器一条 Release），所以**不会**给任何一条打 `Latest` 标签 —— 否则每次运行
+"最新版本"都会随机落到某个管理器上，容易让人下错包。
+
+发布是每个 job 各自做的：某个管理器编译失败只影响它自己那一份，不会挡住其它管理器的包照常发布（矩阵是 `fail-fast: false`）。
 
 #### 关于 `stock_kernel_version`
 
@@ -193,7 +207,8 @@ package.sh  → AnyKernel3(gki-2.0) → 放入 Image → zip → 生成 build-in
 .github/workflows/build.yml   # 唯一的构建入口，所有选项都在这里（含"预设 × root 管理器"矩阵）
 .github/workflows/verify.yml  # 刷机前体检：静态检查 + QEMU 启动冒烟测试
 config/
-  base.config                 # 每次构建都会应用（overlayfs/tmpfs/kallsyms/fanotify、关 WERROR）
+  device/gki_defconfig        # 可选：手机出厂配置（config_mode=device 时使用，最贴近 ABI）
+  base.config                 # overlay 模式下每次构建都会应用（overlayfs/tmpfs/kallsyms/fanotify、关 WERROR）
   root/*.config               # 各 root 管理器的 CONFIG_KSU 与专属开关
   features/*.config           # SUSFS / NoMount / BBG / DroidSpaces / Networking / NTSync / BPF
 scripts/
@@ -202,6 +217,7 @@ scripts/
   build.sh                    # Kleaf 构建 + 产物校验
   package.sh                  # AnyKernel3 打包 + 构建说明
   check-device.sh             # 连手机只读自检：LKM 残留 / 页大小 / KMI / KSU 状态
+  get-device-config.sh        # 连手机把出厂 /proc/config.gz 取回来 -> config/device/gki_defconfig
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
@@ -338,7 +354,40 @@ adb shell su -c 'cat /sys/fs/pstore/console-ramoops*' | tail -n 200
 | 一段 `Unable to handle kernel paging request` / `BUG:` 栈 | 内核代码问题，通常是某个功能补丁 | 按第 3 步二分 |
 | 什么都没有 | 内核根本没跑起来（刷入方式 / AVB / boot header） | 回到第 1 步 |
 
-### 5. 二分定位：用 `preset` 把变量降到最少
+### 5. 二分定位：`preset` 管补丁，`config_mode` 管配置
+
+两个维度要分开排：`preset` 控制**打了多少补丁**，`config_mode` 控制**改了多少配置**。
+连 `preset=vanilla` 都起不来，说明问题在配置层或更底层，跟 root/SUSFS 无关。
+
+| `config_mode` | 内容 | 用来回答 |
+| --- | --- | --- |
+| `pristine` | 内核配置**一个字都不改**（连 `base.config` 都不叠加） | "是不是我们的配置改动把内核改坏了" |
+| `device` | 用手机出厂配置 `config/device/gki_defconfig` 当 defconfig，只叠加 root/功能项 | "是不是配置与出厂不一致导致的 ABI 问题" |
+| `overlay` | 在官方 `gki_defconfig` 上叠加 `config/base.config`（默认） | 正式构建 |
+
+推荐顺序（前两层都不改代码，只改一个下拉框）：
+
+```
+① config_mode=pristine + preset=vanilla + root_manager=none
+      → 纯 ACK 参考内核。起得来：问题在配置层；起不来：问题在构建流程或设备侧（刷入/AVB/分区）
+② config_mode=device   + preset=vanilla + root_manager=none
+      → 出厂配置 + 纯 ACK。起得来：说明 ABI 敏感项在 base.config 里，逐行加回去
+③ config_mode=device   + preset=safe
+      → 出厂配置 + root + SUSFS，正式可用组合
+```
+
+`device` 模式需要先把手机上的出厂配置取回来（**只读操作**）：
+
+```bash
+bash scripts/get-device-config.sh          # 读 /proc/config.gz -> config/device/gki_defconfig
+git add config/device/gki_defconfig && git commit -m "config: 加入 warsaw 出厂内核配置"
+```
+
+用出厂配置的意义：内核的 `CONFIG_*` 决定了 `struct` 布局，进而决定导出符号的 CRC。
+厂商的 `vendor_dlkm` / `system_dlkm` 模块是按出厂配置编的，配置只要在 ABI 敏感项上偏了一点，
+模块就会 `disagrees about version of symbol` 全部加载失败 —— 内核活着、Android 起不来、卡 logo。
+
+### 5.1 用 `preset` 把补丁变量降到最少
 
 | 构建 | 内容 | 用途 |
 | --- | --- | --- |

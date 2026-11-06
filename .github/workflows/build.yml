@@ -42,6 +42,16 @@ on:
         type: string
         default: ""
 
+      config_mode:
+        description: "配置来源：overlay = 在官方 gki_defconfig 上叠加本仓库的开关；device = 直接用 config/device/gki_defconfig（手机出厂配置）；pristine = 一个字都不改，纯 ACK 参考内核（配合 preset=vanilla 排查）"
+        type: choice
+        required: true
+        default: overlay
+        options:
+          - overlay
+          - device
+          - pristine
+
       susfs:
         description: "SUSFS（root 隐藏，建议开启）。KowSU 与 SUSFS 不兼容，选 all 时 kowsu 那份会自动关闭 SUSFS"
         type: boolean
@@ -109,10 +119,15 @@ on:
         type: string
         default: K90Ultra
 
-      publish_release:
-        description: "构建成功后发布 GitHub Release（每个 root 管理器一个）"
-        type: boolean
-        default: true
+      release:
+        description: "发布方式：release = 正式 Release；prerelease = 预发布（GitHub 上标记 Pre-release，不会出现在 /releases/latest）；none = 不发布，只留 Artifacts"
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - prerelease
+          - none
 
 permissions:
   contents: write
@@ -243,6 +258,7 @@ jobs:
       PTRACE_FIX: ${{ inputs.ptrace_fix }}
       UNICODE_FIX: ${{ inputs.unicode_fix }}
       BPF: ${{ inputs.bpf }}
+      CONFIG_MODE: ${{ inputs.config_mode }}
       PAGE_SIZE: ${{ inputs.page_size }}
       MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
       KERNEL_TAG: ${{ inputs.kernel_tag }}
@@ -343,13 +359,16 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 发布 Release
-        if: ${{ inputs.publish_release && success() }}
+        if: ${{ inputs.release != 'none' && success() }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.ZIP_NAME }}
           body_path: out/build-info.md
           files: ${{ env.ZIP_PATH }}
+          # release / prerelease 的区别就是 GitHub 的 Pre-release 标记
+          prerelease: ${{ inputs.release == 'prerelease' }}
+          # 一次运行会出多个包（每个管理器一个），不抢 "Latest" 标签，避免每次随机落到某个管理器上
           make_latest: false
           fail_on_unmatched_files: true
 
@@ -367,14 +386,23 @@ jobs:
           PAGE_SIZE: ${{ inputs.page_size }}
           SUSFS_BRANCH: ${{ inputs.susfs_branch }}
           MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
+          RELEASE_MODE: ${{ inputs.release }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, os
 
           entries = json.loads(os.environ.get("MATRIX") or "[]")
+          mode = os.environ.get("RELEASE_MODE", "")
+          mode_label = {
+              "release": "正式 Release",
+              "prerelease": "预发布（Pre-release）",
+              "none": "不发布（只留 Artifacts）",
+          }.get(mode, mode or "未知")
+
           print("### 本轮构建汇总\n")
           print(f"- 矩阵任务数：`{len(entries)}`")
           print(f"- 矩阵整体结果：`{os.environ.get('BUILD_RESULT', 'unknown')}`")
+          print(f"- 发布方式：{mode_label}")
           print(f"- 页大小：`{os.environ.get('PAGE_SIZE', '')}`，源码：`{os.environ.get('MANIFEST_BRANCH', '')}`，"
                 f"SUSFS 分支：`{os.environ.get('SUSFS_BRANCH', '')}`")
           print()
