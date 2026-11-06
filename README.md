@@ -221,7 +221,10 @@ scripts/
   get-device-config.sh        # 连手机把出厂 /proc/config.gz 取回来 -> config/device/gki_defconfig
   get-last-log.sh             # 连手机抓上一次卡住那轮开机的 ramoops 日志并直接给结论
   check-abi.sh                # 一条命令比对一个包与出厂配置的 ABI 差异（不构建、不刷机）
+  make-boot.sh                # 用原厂 boot.img 当模板换内核，绕开 AK3 产出可直接刷的 boot.img
   py/check_config_parity.py   # 产物 config 与出厂 config 的 ABI 敏感项比对（构建时自动跑）
+  py/boot_config.py           # 直接从原厂 boot.img 里取出内嵌 .config（不需要手机）
+  py/repack_boot.py           # 只改 kernel_size 的 boot.img 重打包（结构与本厂一致）
   verify-image.sh             # 刷机前体检入口（可离线跑）
   py/inspect_image.py         # Image 头部 / 内嵌 .config / 功能项检查
   py/version_pin.py           # 版本对齐
