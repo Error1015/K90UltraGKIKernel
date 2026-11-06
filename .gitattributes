@@ -1,0 +1,7 @@
+# 统一使用 LF：shell 脚本在 Windows 下被转成 CRLF 会导致 runner 上
+# "bad interpreter: /usr/bin/env bash^M" 之类的诡异错误
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary
