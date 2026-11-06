@@ -16,7 +16,7 @@ ROOT_MANAGER="${ROOT_MANAGER:-kernelsu-next}"
 ROOT_REF="${ROOT_REF:-}"
 
 MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
-MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-lts}"
+MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-2024-12}"
 KERNEL_TAG="${KERNEL_TAG:-}"
 STOCK_KERNEL_VERSION="${STOCK_KERNEL_VERSION:-}"
 

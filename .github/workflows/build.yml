@@ -13,7 +13,7 @@ on:
         description: "构建预设：full = 按下面的开关全量构建（默认）；safe = 只留 root + SUSFS；vanilla = 不集成任何东西，只验证基础内核"
         type: choice
         required: true
-        default: full
+        default: safe
         options:
           - full
           - safe
@@ -21,12 +21,14 @@ on:
       variants:
         description: "想一次并行构建多个预设时填写，逗号分隔（例如 full,safe）；留空则只构建上面的 preset"
         type: string
-        default: ""
+        # 卡 Logo 二分：一次并行出 vanilla（纯 GKI）和 safe（root + SUSFS），
+        # 两个包同一轮跑完即可判定问题在基础内核还是补丁层。
+        default: "vanilla,safe"
       root_manager:
         description: "Root 管理器：all = 全部（每个管理器各出一个包）；也可以只选一个"
         type: choice
         required: true
-        default: all
+        default: bakasu
         options:
           - all
           - kernelsu-next
@@ -87,9 +89,9 @@ on:
           - 16k
 
       manifest_branch:
-        description: "GKI 源码清单分支（默认跟踪 6.6 LTS）"
+        description: "GKI 源码清单分支（默认对齐小米 warsaw-w-oss 开源的 6.6.57 出厂内核）"
         type: string
-        default: common-android15-6.6-lts
+        default: common-android15-6.6-2024-12
       kernel_tag:
         description: "锁定到某个 ACK tag（例如 android15-6.6-2025-06，留空 = 分支最新）"
         type: string
