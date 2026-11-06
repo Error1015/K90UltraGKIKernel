@@ -20,6 +20,8 @@ COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
 MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-android15-6.6-lts}"
 KERNEL_TAG="${KERNEL_TAG:-}"
 KERNEL_RELEASE="${KERNEL_RELEASE:-}"
+KERNEL_COMMIT="${KERNEL_COMMIT:-}"
+EXPECT_KERNEL_HEAD="${EXPECT_KERNEL_HEAD:-}"
 STOCK_KERNEL_VERSION="${STOCK_KERNEL_VERSION:-}"
 
 PY_BIN="$(command -v python3 || command -v python || true)"
@@ -104,7 +106,9 @@ summary() {
   info "Unicode Fix   : ${UNICODE_ON}"
   info "BTF/eBPF/FUSE : ${BPF_ON}"
   info "源码分支      : ${MANIFEST_BRANCH}${KERNEL_TAG:+ @ $KERNEL_TAG}"
-  if [ -n "$KERNEL_RELEASE" ]; then
+  if [ -n "$KERNEL_COMMIT" ]; then
+    info "原厂内核提交  : ${KERNEL_COMMIT}（源码钉到这个提交，最精确）"
+  elif [ -n "$KERNEL_RELEASE" ]; then
     info "目标内核版本  : ${KERNEL_RELEASE}（源码锁到同版本的 ACK 发布 tag）"
   fi
   info "页大小        : ${PAGE_SIZE:-4k}"
@@ -121,6 +125,31 @@ kernel_tag_branch() {
   b="$(printf '%s' "$MANIFEST_BRANCH" | grep -oE 'android[0-9]+-[0-9]+\.[0-9]+' | head -1)"
   [ -n "$b" ] || b="android${ANDROID_VERSION}-${KERNEL_VERSION}"
   printf '%s' "$b"
+}
+
+# 原厂内核提交（uname -r 里的 -g<sha>）-> tag，或直接把 common 钉到该提交
+# 优先级最高：它比"版本号"精确，版本号只能定位到某个 sublevel，提交能定位到同一次构建的源码
+resolve_kernel_commit() {
+  [ -z "$KERNEL_TAG" ] || return 0
+  [ -n "$KERNEL_COMMIT" ] || return 0
+
+  local want tag line
+  want="$(printf '%s' "$KERNEL_COMMIT" | tr 'A-Z' 'a-z')"
+  log "按原厂内核提交定位源码: ${KERNEL_COMMIT}"
+
+  line="$(git ls-remote --tags "$COMMON_URL" 2>/dev/null | grep -i "^${want}" | head -1 || true)"
+  if [ -n "$line" ]; then
+    tag="$(printf '%s' "$line" | awk '{print $2}' | sed 's|refs/tags/||;s|\^{}||')"
+    KERNEL_TAG="$tag"
+    export KERNEL_TAG
+    info "该提交对应 ACK 发布 tag: ${KERNEL_TAG}"
+    return 0
+  fi
+
+  warn "公开的 ACK tag 里没有 ${KERNEL_COMMIT}（很可能是 Google release 分支上的提交）"
+  warn "改为直接把 common 钉到这个提交，同步后校验 HEAD 前缀是否一致"
+  EXPECT_KERNEL_HEAD="$want"
+  export EXPECT_KERNEL_HEAD
 }
 
 # 目标版本 -> ACK 发布 tag（tag 是不可变的，能把源码精确锁到那个 sublevel）
@@ -153,6 +182,7 @@ resolve_kernel_release() {
 
 sync_kernel() {
   log "同步 GKI 内核源码: ${MANIFEST_BRANCH}"
+  resolve_kernel_commit
   resolve_kernel_release
   mkdir -p "$KROOT"
   cd "$KROOT"
@@ -197,8 +227,22 @@ sync_kernel() {
     sync_tags=""
   fi
 
-  retry 3 repo sync -c --current-branch --no-clone-bundle $sync_tags \
-    -j"$(nproc)" --jobs-checkout="$(nproc)"
+  if [ -z "$KERNEL_TAG" ] && [ -n "$EXPECT_KERNEL_HEAD" ]; then
+    local manifest=".repo/manifests/default.xml"
+    [ -f "$manifest" ] || die "找不到 $manifest"
+    sed -i "/path=\"common\"/ s|revision=\"[^\"]*\"|revision=\"${EXPECT_KERNEL_HEAD}\"|" "$manifest"
+    grep -q "revision=\"${EXPECT_KERNEL_HEAD}\"" "$manifest" || die "清单中未找到 path=\"common\"，无法钉提交"
+    info "已把 common 钉到提交: ${EXPECT_KERNEL_HEAD}"
+    sync_tags=""
+  fi
+
+  if ! retry 3 repo sync -c --current-branch --no-clone-bundle $sync_tags \
+        -j"$(nproc)" --jobs-checkout="$(nproc)"; then
+    if [ -n "$EXPECT_KERNEL_HEAD" ]; then
+      die "按提交 ${EXPECT_KERNEL_HEAD} 同步失败（短 SHA 可能无法直接 fetch）。改用 kernel_release=${KERNEL_RELEASE:-<版本>}，或填完整 40 位 SHA"
+    fi
+    die "repo sync 失败"
+  fi
 
   [ -d "$COMMON" ] || die "同步完成但找不到 $COMMON"
   [ -f "$COMMON/Makefile" ] || die "$COMMON 不是内核源码树"
@@ -209,6 +253,15 @@ sync_kernel() {
 
   if [ -n "$KERNEL_RELEASE" ] && [ "$ver" != "$KERNEL_RELEASE" ]; then
     die "源码版本 ${ver} 与目标 ${KERNEL_RELEASE} 不符（tag 锁定未生效？）"
+  fi
+
+  if [ -n "$EXPECT_KERNEL_HEAD" ]; then
+    local head
+    head="$(git -C "$COMMON" rev-parse HEAD 2>/dev/null || true)"
+    case "$head" in
+      "$EXPECT_KERNEL_HEAD"*) info "源码提交与原厂一致: $(printf '%s' "$head" | cut -c1-12)" ;;
+      *) die "源码 HEAD=$(printf '%s' "$head" | cut -c1-12) 与原厂提交 ${EXPECT_KERNEL_HEAD} 不一致；可改用 kernel_release=${KERNEL_RELEASE:-<版本>}" ;;
+    esac
   fi
 
   SOURCE_KERNEL_VERSION="$ver"

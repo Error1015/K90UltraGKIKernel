@@ -115,7 +115,8 @@ bash scripts/check-device.sh
 | `none` | 纯内核，不集成任何 root，用于对照/排查 |
 
 选 `all` 时产物分别是 `...-kernelsu-next-susfs-full-4k-....zip`、`...-bakasu-susfs-full-4k-....zip` 这样的独立包，
-**刷哪个就装哪个的管理器**，不能混用。`variants` 里填多个预设时，矩阵是"预设 × root 管理器"的笛卡尔积。
+**刷哪个就装哪个的管理器**，不能混用。`variants` 里填多个预设时，矩阵是"预设 × root 管理器"的笛卡尔积；
+`variants` 只是**在 `preset` 之外再多加几个预设**（合并，不是替换），所以选了 `preset=full` 就一定会出 full。
 
 `root_ref` 可以钉住分支、tag 或 commit。留空则取各仓库默认分支最新（`kernelsu-next` 取 `dev`，其余取 `main`/`master`）；选 `all` 时这个 ref 会对所有管理器生效（所以只适合填各仓库都存在的公共分支）。
 
@@ -138,12 +139,14 @@ bash scripts/check-device.sh
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `preset` | `full` | `full` = 按开关全量构建；`safe` = 只留 root + SUSFS，其余开关强制关闭；`vanilla` = 什么都不加，验证基础内核（此时 root 维度会自动收敛成一份，不会重复构建） |
+| `variants` | 空 | 额外追加的预设（`safe,vanilla` 这样写）。**与 `preset` 合并，不会替换它**；只想跑一个预设就留空 |
 | `root_manager` | `all` | 见上一节。`all` = 所有管理器各出一个包 |
 | `page_size` | `4k` | 小米 `build.config.msm.sun` 里写死 `PAGE_SIZE=4096`，K90 Ultra 就是 4K |
 | `config_mode` | `overlay` | 配置来源。`device` = 用出厂配置（最稳），`pristine` = 零改动（排查用） |
 | `lto` | `thin` | 官方 GKI release 用的就是 thin；`none` 更快但内核二进制与官方不同 |
 | `manifest_branch` | `common-android15-6.6-lts` | 跟踪 6.6 LTS 最新。想复现历史构建就换成 `common-android15-6.6-2025-06` 这类日期分支 |
-| `kernel_release` | 空 | **推荐填**，例如 `6.6.118`。自动解析出同版本的 ACK 发布 tag 并锁定源码 |
+| `kernel_commit` | 空 | **最精确**：填原厂 `uname -r` 里 `-g` 后面的 hash（如 `c4127a25dcf3`）。命中 ACK tag 就自动用 tag，否则把源码直接钉到该提交 |
+| `kernel_release` | 空 | 例如 `6.6.118`。自动解析出同版本的 ACK 发布 tag 并锁定源码 |
 | `kernel_tag` | 空 | 直接钉到某个不可变 ACK tag（如 `android15-6.6-2025-12_r3`），填了就忽略 `kernel_release` |
 | `stock_kernel_version` | 空 | 版本对齐 hack，见下文 |
 | `susfs_branch` | `gki-android15-6.6` | 换 SUSFS 分支时同步改 |
@@ -177,7 +180,24 @@ Google 的 `abi_gki_aarch64` 白名单。厂商往白名单里追加的符号（
   `disagrees about version of symbol` 而拒绝加载；
 - 一阶段模块起不来 → init 挂不到 `/system` → **卡在开机 logo，不 panic、不重启**。
 
-这就是为什么不要拿分支最新去刷一台固定版本的机器。填 `kernel_release` 后，
+这就是为什么不要拿分支最新去刷一台固定版本的机器。
+
+**锁定优先级：`kernel_commit` > `kernel_tag` > `kernel_release` > 分支最新。**
+
+`kernel_commit` 最硬——`uname -r` 里的 `-g<sha>` 是构建时打在版本串里的源码提交：
+
+```
+6.6.118-android15-8-gc4127a25dcf3-ab15863337-4k
+                    ^^^^^^^^^^^^ 这个就是 common 的提交
+```
+
+流程是：先用 `git ls-remote --tags` 按 SHA 前缀反查，能对上 ACK 发布 tag 就锁定该 tag
+（tag 不可变，`repo sync` 也最稳）；对不上就把清单里 `common` 的 `revision` 直接改成这个提交，
+同步后校验 `git rev-parse HEAD` 前缀是否一致，不一致直接中断。
+
+> 注意：`-ab15863337` 是构建号、`-4k` 是 `LOCALVERSION`，都不影响源码版本，只有 `-g<sha>` 有用。
+
+填 `kernel_release` 时，
 `scripts/py/resolve_kernel_tag.py` 会做这几件事：
 
 1. `git ls-remote` 列出 `android15-6.6*` 的发布 tag（`android15-6.6.118_r00` 这种按版本命名的，
@@ -457,7 +477,7 @@ bash scripts/check-abi.sh K90Ultra-GKI-....zip     # 默认比对 config/device/
 顺序建议：**vanilla → safe → full**，每次只加一层。NoMount 与 BBG 都会改 VFS / 块设备层，
 是最容易"内核活着但 Android 起不来"的两个，建议最后再加。
 
-嫌一轮一轮太慢可以一次性并行出多个包：`variants` 填 `safe,full`，两个预设各跑一份；
+嫌一轮一轮太慢可以一次性并行出多个包：`variants` 填 `safe`（**会与 preset 合并**），两个预设各跑一份；
 再配上 `root_manager=all`，一轮就能同时拿到"所有管理器"的对照包，直接判断是"基础内核的问题、
 某个补丁的问题，还是某个管理器的签名/兼容问题"。
 
@@ -466,7 +486,8 @@ bash scripts/check-abi.sh K90Ultra-GKI-....zip     # 默认比对 config/device/
 **默认会一次出 5 个包，会不会很久 / 很费额度**
 矩阵里的每个组合是一个独立 job、独立跑一遍 `repo sync` + 编译，彼此并行。整体墙钟时间和只构建一个差不多
 （主要耗时在源码同步与 LTO 链接），代价是并行占用 5 个 runner。只想出某一个管理器就把它单独选上，
-或者用 `variants` 控制预设数量（`variants=full,safe` + `root_manager=all` 是 10 个 job）。
+预设数量则由 `variants` 控制（`preset=full` + `variants=safe` + `root_manager=all` 是 10 个 job）。
+注意 `variants` 是"额外追加"，不会替换 `preset`；想只跑一个预设就把 `variants` 留空。
 
 **可以只换管理器 APK、不重刷内核吗**
 不行。5 个包分别是把对应管理器的内核代码编进去的，签名校验各不相同；换管理器必须刷对应那份 AK3 包。

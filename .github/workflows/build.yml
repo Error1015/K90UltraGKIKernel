@@ -13,22 +13,20 @@ on:
         description: "构建预设：full = 按下面的开关全量构建（默认）；safe = 只留 root + SUSFS；vanilla = 不集成任何东西，只验证基础内核"
         type: choice
         required: true
-        default: safe
+        default: full
         options:
           - full
           - safe
           - vanilla
       variants:
-        description: "想一次并行构建多个预设时填写，逗号分隔（例如 full,safe）；留空则只构建上面的 preset"
+        description: "额外再并行构建的预设（逗号分隔，例如 safe,vanilla）。会和上面的 preset 合并，不会替换它；留空表示只构建 preset"
         type: string
-        # 卡 Logo 二分：一次并行出 vanilla（纯 GKI）和 safe（root + SUSFS），
-        # 两个包同一轮跑完即可判定问题在基础内核还是补丁层。
-        default: "vanilla,safe"
+        default: ""
       root_manager:
         description: "Root 管理器：all = 全部（每个管理器各出一个包）；也可以只选一个"
         type: choice
         required: true
-        default: bakasu
+        default: all
         options:
           - all
           - kernelsu-next
@@ -112,6 +110,11 @@ on:
         description: "GKI 源码清单分支（默认跟踪 6.6 LTS；机型出厂为 6.6.118，与该线最新一致）"
         type: string
         default: common-android15-6.6-lts
+      kernel_commit:
+        description: "原厂内核提交（uname -r 里的 -g 后面的 hash，如 c4127a25dcf3）：最精确的锁定方式，命中 ACK tag 时自动用 tag，否则把源码直接钉到这个提交"
+        type: string
+        default: ""
+
       kernel_release:
         description: "目标内核版本（推荐填手机的版本，如 6.6.118）：自动把源码锁定到同版本的 ACK 发布 tag，避免用比手机新几十个 stable 的源码"
         type: string
@@ -183,19 +186,32 @@ jobs:
           def truthy(value):
               return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
-          # --- 预设（variants 优先，逗号分隔） ---
-          raw_presets = (os.environ.get("VARIANTS") or "").strip() or os.environ["PRESET"]
+          # --- 预设：preset 永远参与，variants 只是"额外再加几个"（合并，不是替换） ---
+          # 之前这里是 variants 优先、非空就丢弃 preset，结果表单里残留一句
+          # "vanilla,safe" 就会让你明明选了 full 却一个 full 包都不出。
           presets = []
-          for part in raw_presets.split(","):
-              name = part.strip().lower()
+
+          def add_preset(raw, where):
+              name = (raw or "").strip().lower()
               if not name:
-                  continue
+                  return
               if name not in ALLOWED_PRESETS:
-                  raise SystemExit(f"未知预设: {name}（可选 safe / full / vanilla）")
+                  raise SystemExit(f"未知预设: {name}（来自 {where}，可选 safe / full / vanilla）")
               if name not in presets:
                   presets.append(name)
+
+          add_preset(os.environ.get("PRESET"), "preset")
+          for part in (os.environ.get("VARIANTS") or "").split(","):
+              add_preset(part, "variants")
+
           if not presets:
-              raise SystemExit("没有解析出任何预设")
+              raise SystemExit("没有解析出任何预设（preset 与 variants 都是空的）")
+
+          variants_raw = (os.environ.get("VARIANTS") or "").strip()
+          extra = [p for p in presets if p != (os.environ.get("PRESET") or "").strip().lower()]
+          if variants_raw and extra:
+              print(f"variants 与 preset 合并后共 {len(presets)} 个预设: {', '.join(presets)}",
+                    file=sys.stderr)
 
           # --- root 管理器（all = 全部） ---
           raw_root = (os.environ.get("ROOT_MANAGER") or "").strip().lower() or "all"
@@ -279,6 +295,7 @@ jobs:
       MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
       KERNEL_TAG: ${{ inputs.kernel_tag }}
       KERNEL_RELEASE: ${{ inputs.kernel_release }}
+      KERNEL_COMMIT: ${{ inputs.kernel_commit }}
       STOCK_KERNEL_VERSION: ${{ inputs.stock_kernel_version }}
       SUSFS_BRANCH: ${{ inputs.susfs_branch }}
       BRAND: ${{ inputs.brand }}
