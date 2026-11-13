@@ -252,8 +252,10 @@ START=$(date +%s)
 set +e
 (
   cd "$KROOT" || exit 1
-  tools/bazel build --config=fast --lto=thin \
-    //common:kernel_aarch64_dist -- --destdir="$KLEAF_DIST"
+  # --config=fast 本身就等于 --lto=thin --config=local，不用再单独传 --lto。
+  # target 用 kernel_aarch64/Image：_dist 那个是 executable rule，--destdir
+  # 只能跟在 `bazel run --` 后面，用 build 会把 --destdir 当成 target 解析。
+  tools/bazel build --config=fast //common:kernel_aarch64/Image
 ) > "$OUT/build.log" 2>&1
 RC=$?
 set -e
@@ -262,7 +264,7 @@ ELAPSED=$(( $(date +%s) - START ))
 if [ "$RC" != "0" ]; then
   warn "Kleaf 失败（${ELAPSED}s，返回 $RC）"
   echo "===== 疑似错误行（最多 60 条）====="
-  grep -niE 'error|undefined reference|no such target|not found|killed|fatal|abort|out of memory' "$OUT/build.log" \
+  grep -niE 'error|undefined reference|no such target|not found|killed|fatal|abort|out of memory|No space left' "$OUT/build.log" \
     | head -60 || true
   echo "===== 日志末尾 40 行 ====="
   tail -40 "$OUT/build.log"
@@ -270,9 +272,9 @@ if [ "$RC" != "0" ]; then
 fi
 log "编译完成（${ELAPSED}s）"
 
-IMG="$KLEAF_DIST/Image"
+IMG="$KROOT/bazel-bin/common/kernel_aarch64/Image"
 if [ ! -f "$IMG" ]; then
-  IMG="$(find "$KLEAF_DIST" "$KROOT/bazel-bin" -maxdepth 6 -name Image -type f 2>/dev/null | head -1)"
+  IMG="$(find "$KROOT/bazel-bin" -maxdepth 6 -name Image -type f 2>/dev/null | head -1)"
 fi
 fi    # ← build.sh / Kleaf 分支结束
 
