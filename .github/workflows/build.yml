@@ -69,9 +69,15 @@ on:
         type: choice
         options: [release, prerelease, none]
         default: release
+      publish_run_id:
+        description: '只发布：填一次成功运行的 run id，直接取那次产物发 Release，不重新编译'
+        required: false
+        default: ''
 
 permissions:
   contents: write
+  # 下载历史运行的产物（publish_run_id）需要 actions:read
+  actions: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -112,6 +118,8 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: resolve
+    # 填了 publish_run_id 就只走发布，不重新编译
+    if: ${{ inputs.publish_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
@@ -254,28 +262,41 @@ jobs:
     if: ${{ always() && inputs.release != 'none' }}
     runs-on: ubuntu-latest
     steps:
-      - name: 下载本次构建的全部产物
+      - name: 下载产物
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           pattern: boot-warsaw-*
-          path: dist
+          path: dl
+          # 填了 publish_run_id 就取那次运行的产物；否则取本次运行
+          run-id: ${{ inputs.publish_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 汇总发布说明
         id: collect
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          imgs=(dist/*/*.img)
+          mkdir -p dl dist
+
+          # 不要用固定层级通配。artifact 内部的相对路径取决于上传时各 path 的
+          # 公共父目录：我们把 dist/*.img 和根目录的 prepare.log 一起上传，
+          # 公共父目录就是工作区根，于是 artifact 里是 dist/xxx.img ——
+          # 下载后变成 dl/<artifact>/dist/xxx.img，写死 dl/*/*.img 一定是空的。
+          mapfile -t imgs < <(find dl -type f -name '*.img' | sort)
           echo "count=${#imgs[@]}" >> "$GITHUB_OUTPUT"
           echo "共 ${#imgs[@]} 个包"
+          find dl -type f | sort | sed 's/^/  /'
+
+          # 展平到 dist/ 供上传 Release（附件名不能带目录）
+          for f in "${imgs[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
+          mapfile -t infos < <(find dl -type f -name 'build-info-*.md' | sort)
+          for f in "${infos[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
 
           {
             echo "# K90 Ultra (warsaw) GKI — ${{ inputs.kernel_release }}"
             echo
-            echo "一次运行构建的全部产物：同一份源码、同一份配置，只有 root 不同。"
-            echo "刷哪个就装哪个的管理器 APK，详见下方各包说明。"
+            echo "同一份源码、同一份配置，只有 root 不同。刷哪个就装哪个的管理器 APK。"
             echo
             echo "| 包 | 大小 |"
             echo "| --- | --- |"
@@ -285,13 +306,14 @@ jobs:
             echo "| \`$(basename "$f")\` | $(stat -c %s "$f") 字节 |" >> dist/RELEASE.md
           done
 
-          echo >> dist/RELEASE.md
-          for f in dist/*/build-info-*.md; do
-            [ -f "$f" ] || continue
-            echo "---" >> dist/RELEASE.md
-            cat "$f" >> dist/RELEASE.md
+          if [ "${#infos[@]}" -gt 0 ]; then
             echo >> dist/RELEASE.md
-          done
+            for f in "${infos[@]}"; do
+              echo "---" >> dist/RELEASE.md
+              cat "$f" >> dist/RELEASE.md
+              echo >> dist/RELEASE.md
+            done
+          fi
 
           cat dist/RELEASE.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -303,9 +325,8 @@ jobs:
           name: K90 Ultra GKI ${{ inputs.kernel_release }} (run ${{ github.run_number }})
           body_path: dist/RELEASE.md
           files: |
-            dist/*/*.img
-            dist/*/build-info-*.md
-            dist/*/kernel-version.txt
+            dist/*.img
+            dist/build-info-*.md
           prerelease: ${{ inputs.release == 'prerelease' }}
           make_latest: false
           fail_on_unmatched_files: false
@@ -314,5 +335,7 @@ jobs:
         if: steps.collect.outputs.count == '0'
         shell: bash
         run: |
-          echo "::warning::所有矩阵任务都失败了，本次不创建 Release"
+          echo "::warning::没找到任何 boot-warsaw-* 产物，本次不创建 Release"
+          echo "常见原因：所有矩阵任务都失败（看各 job 的日志），"
+          echo "或者产物上传步骤在编译失败后被跳过了。"
           exit 0
