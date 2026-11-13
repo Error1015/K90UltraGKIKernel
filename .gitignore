@@ -21,3 +21,6 @@ last-boot-log-*.txt
 # Python 缓存
 __pycache__/
 *.pyc
+
+# repo launcher 与本地临时件
+.bin/

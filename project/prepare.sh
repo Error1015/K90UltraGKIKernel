@@ -43,6 +43,48 @@ LOCALVERSION="${LOCALVERSION:--android15-8-warsaw-4k}"
 mkdir -p "$KROOT"
 
 # ---------------------------------------------------------------------------
+# 前置：repo launcher + git 身份
+#
+# 两个都属于"不装就一定挂"的东西：
+#   1. GitHub runner 上没有 repo 这个命令，必须先下载 launcher，否则
+#      `repo init` 直接 command not found（表现为"准备源码"步骤几秒就红）。
+#   2. runner 上没有 git 身份，`repo init` 会交互式问 "is that correct [y/n]?"，
+#      CI 里没人回答 → 一直等 → 看起来像卡住。
+# ---------------------------------------------------------------------------
+ensure_repo() {
+  command -v repo >/dev/null 2>&1 && { info "repo: $(command -v repo)"; return 0; }
+
+  local dest="$WS/.bin/repo"
+  mkdir -p "$WS/.bin"
+  for url in \
+      "https://storage.googleapis.com/git-repo-downloads/repo" \
+      "https://android.googlesource.com/tools/repo"; do
+    if retry 3 curl -fsSL --retry 3 --retry-delay 3 "$url" -o "$dest" && [ -s "$dest" ]; then
+      chmod +x "$dest"
+      export PATH="$WS/.bin:$PATH"
+      info "已安装 repo launcher（$url）"
+      return 0
+    fi
+    warn "下载 repo 失败: $url"
+  done
+  die "拿不到 repo launcher，无法同步内核源码"
+}
+
+ensure_git_identity() {
+  if [ -z "$(git config --global user.email 2>/dev/null || true)" ]; then
+    git config --global user.email "k90-ci@localhost"
+    git config --global user.name  "k90-ci"
+    info "已设置 git 身份（避免 repo init 交互式确认）"
+  fi
+  # 任何需要输入的场景都直接失败，而不是挂在那里等
+  export GIT_TERMINAL_PROMPT=0
+  export GIT_ASKPASS=/bin/true
+}
+
+ensure_repo
+ensure_git_identity
+
+# ---------------------------------------------------------------------------
 log "阶段 1/6：同步 ACK 源码（${MANIFEST_BRANCH}）"
 # ---------------------------------------------------------------------------
 cd "$KROOT"
@@ -50,7 +92,7 @@ if [ ! -d .repo ]; then
   INIT_OK=0
   for b in "$MANIFEST_BRANCH" "common-${ANDROID_BRANCH}"; do
     info "尝试 manifest 分支: $b"
-    if retry 2 repo init -u "$MANIFEST_URL" -b "$b" --depth=1; then
+    if retry 2 repo init -u "$MANIFEST_URL" -b "$b" --depth=1 < /dev/null; then
       INIT_OK=1
       MANIFEST_BRANCH="$b"
       break
@@ -61,13 +103,18 @@ fi
 
 TAG="$KERNEL_TAG"
 if [ -z "$TAG" ]; then
-  log "解析 6.6.${KERNEL_RELEASE##*.} 对应的 ACK 发布 tag"
+  log "解析 6.6.${KERNEL_RELEASE##*.} 对应的 ACK 发布 tag（要列一次远端 tag，约 10~60 秒）"
   if TAG="$(python3 "$WS/project/resolve_tag.py" \
               --repo "$COMMON_URL" --branch "$ANDROID_BRANCH" --version "$KERNEL_RELEASE")"; then
     info "命中 tag: $TAG"
   else
-    TAG=""
-    warn "没解析到 tag，回退到分支 HEAD（随后会被版本校验拦下）"
+    # 直接失败：回退到分支 HEAD 后必然会在"校验源码版本"那一步挂掉，
+    # 白等十几分钟 repo sync 没有意义。
+    die "没解析到 6.6.${KERNEL_RELEASE##*.} 对应的 ACK 发布 tag。
+    两个办法：
+      1) 把 kernel_tag 直接填上（形如 android15-6.6-2025-12_r3，见上面探测输出里的候选）
+      2) 换一个确定存在的 kernel_release 再跑
+    （如果上面只是网络超时/被限速，直接重跑一次 workflow 即可）"
   fi
 fi
 
@@ -78,8 +125,13 @@ if [ -n "$TAG" ]; then
     || die "钉 manifest 失败"
 fi
 
-log "repo sync（首次约 5~10 分钟）"
+log "repo sync（首次约 5~15 分钟；单次上限 ${SYNC_TIMEOUT:-1800} 秒）"
 SYNC_ARGS=(-c --current-branch --no-tags -j"$(nproc)")
+
+# 单次 sync 加超时：真卡住时宁可失败重试，也不要一路烧到 job 的 150 分钟上限
+sync_once() {
+  timeout "${SYNC_TIMEOUT:-1800}" repo sync "${SYNC_ARGS[@]}" < /dev/null
+}
 
 export GIT_CONFIG_COUNT=2
 export GIT_CONFIG_KEY_0=http.lowSpeedLimit
@@ -87,7 +139,7 @@ export GIT_CONFIG_VALUE_0=1024
 export GIT_CONFIG_KEY_1=http.lowSpeedTime
 export GIT_CONFIG_VALUE_1=120
 
-retry 3 repo sync "${SYNC_ARGS[@]}" || die "repo sync 失败（googlesource 限速时重跑即可）"
+retry 2 sync_once || die "repo sync 失败（googlesource 限速时重跑即可）"
 [ -f "$COMMON/Makefile" ] || die "同步后找不到 $COMMON/Makefile"
 
 # ---------------------------------------------------------------------------
