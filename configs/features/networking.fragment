@@ -1,9 +1,15 @@
 # 网络增强：BBRv3 / WireGuard / IPSet / CIFS
 #
-# BBR 出厂配置里已经是 y，这里显式再写一遍：默认拥塞控制指向 bbr 时，
-# BBR 必须是内建（=y），不能是模块，否则默认算法指向一个加载不出来的模块。
+# BBR 算法本身：出厂配置里已经是 y，显式再写一遍防止将来变动。
+# 默认拥塞控制指向 bbr 时，BBR 必须是内建（=y），不能是模块。
 CONFIG_TCP_CONG_BBR=y
-CONFIG_DEFAULT_TCP_CONG="bbr"
+
+# 默认拥塞控制由 net/ipv4/Kconfig 的 choice 决定，三个成员互斥：
+#   DEFAULT_CUBIC / DEFAULT_BBR / DEFAULT_RENO
+# 必须直接选 DEFAULT_BBR —— CONFIG_DEFAULT_TCP_CONG 是没有 prompt 的 string，
+# 只是 choice 推导出来的结果，直接写它会被 olddefconfig 按默认值重算回 cubic。
+CONFIG_DEFAULT_CUBIC=n
+CONFIG_DEFAULT_BBR=y
 
 # 常用队列调度
 CONFIG_NET_SCH_FQ=y
