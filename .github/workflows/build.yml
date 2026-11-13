@@ -165,6 +165,21 @@ jobs:
         shell: bash
         run: bash project/build.sh 2>&1 | tee build-step.log
 
+      # 编译挂了也把日志留下，否则 if-no-files-found: error 会让产物步骤失败、日志一起丢掉，
+      # 只剩一个空摘要，排查只能靠猜。
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: |
+            prepare.log
+            build-step.log
+            kernel/out/build.log
+            kernel/out/olddefconfig.log
+          if-no-files-found: ignore
+          compression-level: 9
+
       - name: 打包 boot.img（AVB 感知）
         shell: bash
         run: |
