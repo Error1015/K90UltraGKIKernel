@@ -3,7 +3,7 @@ name: Build K90 Ultra GKI
 # ---------------------------------------------------------------------------
 # 一次运行出两份包（矩阵并行）：
 #   vanilla —— 纯内核，不带 root。用来证明"内核本身能在这台机器上启动"。
-#   sukisu  —— 内置 SukiSU-Ultra（+ 可选 SUSFS）。
+#   <root>  —— 选定的 root 管理器（默认 bakasu）+ 可选 SUSFS / 附加功能。
 #
 # 两份都是 **完整 boot 分区镜像**（96MB，含 vbmeta 与 AVB footer，ramdisk_size=0），
 # 用 `fastboot flash boot` 刷入。不用 AnyKernel3 —— 它只写内核，
@@ -21,14 +21,45 @@ on:
         required: false
         default: ''
       root:
-        description: 'root 实现'
+        description: 'root 实现（默认 BakaSU）'
         type: choice
-        options: [sukisu-ultra, none]
-        default: sukisu-ultra
+        options: [bakasu, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
+        default: bakasu
       susfs:
-        description: '集成 SUSFS（需要 root 不为 none）'
+        description: 'SUSFS（选 kowsu 时会自动关掉）'
         type: boolean
         default: true
+
+      # ---- 附加功能（默认全关，一次只加一层）----
+      nomount:
+        description: '附加：NoMount（VFS 层无挂载点伪装）'
+        type: boolean
+        default: false
+      bbg:
+        description: '附加：Baseband Guard（保护 efs/modem）'
+        type: boolean
+        default: false
+      ntsync:
+        description: '附加：NTSync（Proton/Wine 同步原语）'
+        type: boolean
+        default: false
+      networking:
+        description: '附加：BBRv3 + IPSet + CIFS'
+        type: boolean
+        default: false
+      bpf:
+        description: '附加：BTF/eBPF（出厂已是 y，一般无需勾）'
+        type: boolean
+        default: false
+      droidspaces:
+        description: '附加：DroidSpaces 容器所需 namespace'
+        type: boolean
+        default: false
+      unicode:
+        description: '附加：Unicode 绕过修复'
+        type: boolean
+        default: false
+
       localversion:
         description: '版本串后缀（保留 -android15-8 前缀，别破坏 KMI 标识）'
         required: true
@@ -59,9 +90,23 @@ jobs:
           - name: vanilla
             root: none
             susfs: 'false'
-          - name: sukisu
+            nomount: 'false'
+            bbg: 'false'
+            ntsync: 'false'
+            networking: 'false'
+            bpf: 'false'
+            droidspaces: 'false'
+            unicode: 'false'
+          - name: ${{ inputs.root }}
             root: ${{ inputs.root }}
             susfs: ${{ inputs.susfs }}
+            nomount: ${{ inputs.nomount }}
+            bbg: ${{ inputs.bbg }}
+            ntsync: ${{ inputs.ntsync }}
+            networking: ${{ inputs.networking }}
+            bpf: ${{ inputs.bpf }}
+            droidspaces: ${{ inputs.droidspaces }}
+            unicode: ${{ inputs.unicode }}
 
     env:
       ANDROID_BRANCH: android15-6.6
@@ -69,6 +114,13 @@ jobs:
       KERNEL_TAG: ${{ inputs.kernel_tag }}
       ROOT_IMPL: ${{ matrix.root }}
       SUSFS: ${{ matrix.susfs }}
+      NOMOUNT: ${{ matrix.nomount }}
+      BBG: ${{ matrix.bbg }}
+      NTSYNC: ${{ matrix.ntsync }}
+      NETWORKING: ${{ matrix.networking }}
+      BPF: ${{ matrix.bpf }}
+      DROIDSPACES: ${{ matrix.droidspaces }}
+      UNICODE: ${{ matrix.unicode }}
       LOCALVERSION: ${{ inputs.localversion }}
       VARIANT: ${{ matrix.name }}
 
@@ -94,7 +146,7 @@ jobs:
             python3 rsync cpio kmod zip unzip dwarves git curl ca-certificates
           pahole --version || true
 
-      - name: 准备源码 / root / 配置
+      - name: 准备源码 / root / 补丁 / 配置
         shell: bash
         run: bash project/prepare.sh 2>&1 | tee prepare.log
 
@@ -103,6 +155,7 @@ jobs:
         run: bash project/build.sh 2>&1 | tee build-step.log
 
       - name: 打包 boot.img（AVB 感知）
+        shell: bash
         run: |
           set -euo pipefail
           NAME="boot-warsaw-${{ matrix.name }}-${KERNEL_RELEASE}"
@@ -110,15 +163,15 @@ jobs:
           echo "BOOT_NAME=${NAME}" >> "$GITHUB_ENV"
 
       - name: 产物验收
+        shell: bash
         run: |
           set -euo pipefail
-          SUB="${KERNEL_RELEASE##*.}"
           python3 project/verify.py \
             --boot "dist/${BOOT_NAME}.img" \
             --image dist/Image \
             --root "${ROOT_IMPL}" \
             --susfs "${SUSFS}" \
-            --sublevel "$SUB" \
+            --sublevel "${KERNEL_RELEASE##*.}" \
             --out "dist/build-info-${{ matrix.name }}.md"
 
       - name: 上传产物
@@ -160,6 +213,7 @@ jobs:
 
       - name: 运行摘要
         if: always()
+        shell: bash
         run: |
           {
             echo "### ${{ matrix.name }} — ${KERNEL_RELEASE}"
@@ -168,6 +222,9 @@ jobs:
             echo "| --- | --- |"
             echo "| root | ${ROOT_IMPL} |"
             echo "| SUSFS | ${SUSFS} |"
+            echo "| NoMount / BBG | ${NOMOUNT} / ${BBG} |"
+            echo "| NTSync / Networking | ${NTSYNC} / ${NETWORKING} |"
+            echo "| BPF / DroidSpaces / Unicode | ${BPF} / ${DROIDSPACES} / ${UNICODE} |"
             echo "| 源码 tag | ${KERNEL_TAG:-按版本自动解析} |"
             echo "| 产物 | \`${BOOT_NAME}.img\` |"
             echo ""

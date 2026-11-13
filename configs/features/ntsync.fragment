@@ -1,0 +1,2 @@
+# NTSync：Windows NT 同步原语（Proton / Wine 系），需要 kernel_patches 回移
+CONFIG_NTSYNC=y

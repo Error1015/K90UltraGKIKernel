@@ -94,6 +94,36 @@ apply_patch() {
   die "补丁无法应用: $label（reject 见上方输出 / patch-rejects 工件）"
 }
 
+# apply_patch_optional <目标目录> <补丁> [标签]：失败只告警，不中断构建
+apply_patch_optional() {
+  local dir="$1" patch_file="$2" label="${3:-$(basename "$2")}"
+  [ -s "$patch_file" ] || { warn "补丁不存在，跳过: $patch_file"; return 1; }
+  if ( cd "$dir" && patch -p1 --dry-run -N -F0 --batch < "$patch_file" ) > /dev/null 2>&1; then
+    ( cd "$dir" && patch -p1 -N -F0 --batch < "$patch_file" ) | sed 's/^/    /'
+    log "补丁已应用: $label"
+    return 0
+  fi
+  if ( cd "$dir" && patch -p1 --dry-run -N -F3 --batch < "$patch_file" ) > /dev/null 2>&1; then
+    ( cd "$dir" && patch -p1 -N -F3 --batch < "$patch_file" ) | sed 's/^/    /'
+    log "补丁已应用（fuzz=3）: $label"
+    return 0
+  fi
+  warn "补丁跳过（不适用当前源码）: $label"
+  return 1
+}
+
+# 上游项目用 "curl setup.sh | bash" 的方式安装自己的内核模块（NoMount / BBG）
+# run_remote_setup <url> <工作目录> [参数...]
+run_remote_setup() {
+  local url="$1" workdir="$2"
+  shift 2
+  local dest="$OUT/$(basename "$url" .sh)-setup.sh"
+  retry 5 curl -fsSL --retry 5 --retry-delay 3 "$url" -o "$dest"
+  [ -s "$dest" ] || die "下载失败: $url"
+  info "执行 $(basename "$url") (cwd=$workdir${*:+, args=$*})"
+  ( cd "$workdir" && bash "$dest" "$@" )
+}
+
 # ---------------------------------------------------------------------------
 # 内核配置：直接写 $OUT/.config，最终由 make olddefconfig 收敛
 # ---------------------------------------------------------------------------

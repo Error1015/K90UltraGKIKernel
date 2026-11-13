@@ -78,6 +78,7 @@ def main() -> int:
     print("== 2. 内核版本 ==")
     m = re.search(rb"Linux version ([^\x00]{0,120})", image)
     version = m.group(1).decode("utf-8", "replace") if m else ""
+    short_version = version.split(" ")[0] if version else ""
     print(f"    版本串: {version or '未找到'}")
     check(bool(version), "Image 里有版本串")
     if args.sublevel:
@@ -108,11 +109,25 @@ def main() -> int:
         print(f"\n[x] {len(failures)} 项不通过: {', '.join(failures)}")
         return 1
 
+    MANAGERS = {
+        "bakasu": ("BakaSU Manager", "https://github.com/Baka-SU/BakaSU/releases"),
+        "sukisu-ultra": ("SukiSU-Ultra Manager", "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"),
+        "kernelsu": ("KernelSU Manager", "https://github.com/tiann/KernelSU/releases"),
+        "kernelsu-next": ("KernelSU Next Manager", "https://github.com/KernelSU-Next/KernelSU-Next/releases"),
+        "kowsu": ("KowSU Manager", "https://github.com/KOWX712/KernelSU/releases"),
+    }
+    manager, manager_url = MANAGERS.get(args.root, ("无（纯内核）", ""))
+
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# K90 Ultra (warsaw) GKI 构建信息\n\n")
-        fh.write(f"- 内核版本：`{version}`\n")
-        fh.write(f"- root：`{args.root}`" + (f"，SUSFS：`{'on' if susfs else 'off'}`\n" if args.root != "none" else "\n"))
+        fh.write(f"- 内核版本：`{short_version}`\n")
+        fh.write(f"- root：`{args.root}`")
+        if manager_url:
+            fh.write(f" → 需要安装 [{manager}]({manager_url})")
+        fh.write("\n")
+        if args.root != "none":
+            fh.write(f"- SUSFS：`{'on' if susfs else 'off'}`\n")
         fh.write(f"- boot.img 大小：{len(boot)} 字节（= 分区大小，含 vbmeta 与 AVB footer）\n")
         fh.write(f"- 内核 Image：{len(image)} 字节\n")
         fh.write(f"- 源码：ACK `android15-6.6` @ `6.6.{args.sublevel}`\n\n")
@@ -120,7 +135,10 @@ def main() -> int:
         fh.write("# 0) 若之前用过 LKM，先把 init_boot 回原厂（否则一定卡 logo）\n")
         fh.write("fastboot flash init_boot stock_init_boot.img\n")
         fh.write("# 1) 刷本包\nfastboot flash boot boot-warsaw.img\n")
-        fh.write("# 2) 重启\nfastboot reboot\n```\n")
+        fh.write("# 2) 重启\nfastboot reboot\n```\n\n")
+        if args.root != "none":
+            fh.write(f"> 内核里集成的是 **{args.root}** 的代码，必须装 {manager}，"
+                     "装别家会显示\"未安装\"。\n")
     print(f"\n    已写入 {args.out}")
     print("    结论：全部通过")
     return 0

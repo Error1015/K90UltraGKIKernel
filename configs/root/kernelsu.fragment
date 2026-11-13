@@ -1,0 +1,3 @@
+# KernelSU（tiann 原版）
+# SUSFS 胶水不在主分支里，需要 susfs4ksu 的 KernelSU/10_enable_susfs_for_ksu.patch
+CONFIG_KSU=y

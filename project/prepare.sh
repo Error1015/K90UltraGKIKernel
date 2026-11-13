@@ -1,38 +1,52 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# 阶段 1：源码 + root + SUSFS + 内核配置
+# 阶段 1：源码 + root + SUSFS + 附加功能 + 内核配置
 #
-# 设计取向（相对旧流水线的重要变化）：
-#   * 构建系统：Kbuild（make），不用 Kleaf/Bazel —— 与本机型已验证的构建方式一致
-#   * 内核配置：**直接使用原厂 .config**（从 boot.img 提取，见 configs/warsaw_defconfig），
-#     只在上面叠加 KSU/SUSFS 与版本串，不做任何"顺手优化"。
-#     原因是 builtin/module 的划分与 ABI 敏感项必须与出厂一致，否则 vendor 模块加载不了。
+# 设计取向：
+#   * 构建系统：Kbuild（make），不用 Kleaf/Bazel
+#   * 内核配置：直接使用原厂 .config（configs/warsaw_defconfig，从 boot.img 提取），
+#     只在上面叠加 root / 功能 / 版本串
 #   * 源码版本：钉到与手机同 sublevel 的 ACK 发布 tag（默认 6.6.118）
+#   * root 默认 BakaSU，其余 4 个管理器同样支持，按需切换
 # ---------------------------------------------------------------------------
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
 COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
 
-KERNEL_RELEASE="${KERNEL_RELEASE:-6.6.118}"   # 手机 uname -r 的 sublevel
-KERNEL_TAG="${KERNEL_TAG:-}"                  # 直接指定 ACK tag，优先于 KERNEL_RELEASE
+KERNEL_RELEASE="${KERNEL_RELEASE:-6.6.118}"
+KERNEL_TAG="${KERNEL_TAG:-}"
 MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-${ANDROID_BRANCH}-lts}"
 
-ROOT_IMPL="${ROOT_IMPL:-sukisu-ultra}"        # sukisu-ultra | none
-SUKISU_REF="${SUKISU_REF:-v4.3.0}"
+ROOT_IMPL="${ROOT_IMPL:-bakasu}"               # bakasu 为默认
+ROOT_REF="${ROOT_REF:-}"                       # 留空 = 各仓库默认分支
+
 SUSFS="${SUSFS:-true}"
 SUSFS_BRANCH="${SUSFS_BRANCH:-gki-android15-6.6}"
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
+SUSFS_COMMIT="${SUSFS_COMMIT:-}"
+
+NOMOUNT="${NOMOUNT:-false}"
+NOMOUNT_REF="${NOMOUNT_REF:-main}"
+BBG="${BBG:-false}"
+NTSYNC="${NTSYNC:-false}"
+NETWORKING="${NETWORKING:-false}"
+BPF="${BPF:-false}"
+DROIDSPACES="${DROIDSPACES:-false}"
+UNICODE="${UNICODE:-false}"
+
+KERNEL_PATCHES_REF="${KERNEL_PATCHES_REF:-main}"
+KERNEL_PATCHES_REPO="${KERNEL_PATCHES_REPO:-https://github.com/WildKernels/kernel_patches.git}"
+
 LOCALVERSION="${LOCALVERSION:--android15-8-warsaw-4k}"
 
 mkdir -p "$KROOT"
 
 # ---------------------------------------------------------------------------
-log "阶段 1/5：同步 ACK 源码（${MANIFEST_BRANCH}）"
+log "阶段 1/6：同步 ACK 源码（${MANIFEST_BRANCH}）"
 # ---------------------------------------------------------------------------
 cd "$KROOT"
 if [ ! -d .repo ]; then
-  # 分支名在 ACK 里变过几次（-lts / 纯版本线），逐个试，别因为一个名字挂掉整条流水线
   INIT_OK=0
   for b in "$MANIFEST_BRANCH" "common-${ANDROID_BRANCH}"; do
     info "尝试 manifest 分支: $b"
@@ -53,7 +67,7 @@ if [ -z "$TAG" ]; then
     info "命中 tag: $TAG"
   else
     TAG=""
-    warn "没解析到 tag，回退到分支 HEAD（KMI 可能与手机不一致，见 README）"
+    warn "没解析到 tag，回退到分支 HEAD（随后会被版本校验拦下）"
   fi
 fi
 
@@ -65,7 +79,6 @@ if [ -n "$TAG" ]; then
 fi
 
 log "repo sync（首次约 5~10 分钟）"
-# revision 写成完整的 refs/tags/...，所以不需要拉全部 tag
 SYNC_ARGS=(-c --current-branch --no-tags -j"$(nproc)")
 
 export GIT_CONFIG_COUNT=2
@@ -75,11 +88,10 @@ export GIT_CONFIG_KEY_1=http.lowSpeedTime
 export GIT_CONFIG_VALUE_1=120
 
 retry 3 repo sync "${SYNC_ARGS[@]}" || die "repo sync 失败（googlesource 限速时重跑即可）"
-
 [ -f "$COMMON/Makefile" ] || die "同步后找不到 $COMMON/Makefile"
 
 # ---------------------------------------------------------------------------
-log "阶段 2/5：校验源码版本"
+log "阶段 2/6：校验源码版本"
 # ---------------------------------------------------------------------------
 WANT_SUB="${KERNEL_RELEASE##*.}"
 GOT_SUB="$(sed -n 's/^SUBLEVEL *= *//p' "$COMMON/Makefile" | head -1 | tr -d '[:space:]')"
@@ -89,32 +101,54 @@ if [ -n "$WANT_SUB" ] && [ "$GOT_SUB" != "$WANT_SUB" ]; then
     KMI 冻结的是符号 CRC，跨 sublevel 可能让 vendor 模块全部加载失败。
     想强行继续就显式传 KERNEL_RELEASE=$GOT_SUB。"
 fi
-echo "$GOT_SUB" > "$WS/.kernel_sublevel"
 
 # ---------------------------------------------------------------------------
-log "阶段 3/5：集成 root（$ROOT_IMPL）"
+log "阶段 3/6：集成 root（$ROOT_IMPL）"
 # ---------------------------------------------------------------------------
+ROOT_DIR=""
+ROOT_MANAGER_NAME="N/A"
 if [ "$ROOT_IMPL" != "none" ]; then
   case "$ROOT_IMPL" in
+    bakasu)
+      ROOT_REPO="https://github.com/Baka-SU/BakaSU.git";             ROOT_DIR="BakaSU"
+      ROOT_BRANCH="main";        ROOT_MANAGER_NAME="BakaSU Manager" ;;
     sukisu-ultra)
-      SUKISU_DIR="$WS/SukiSU-Ultra"
-      [ -d "$SUKISU_DIR" ] || retry 3 git clone --depth 1 -b "$SUKISU_REF" \
-        https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$SUKISU_DIR" \
-        || die "clone SukiSU-Ultra 失败"
-      ;;
-    *) die "不支持的 root: $ROOT_IMPL（v1 只保留 sukisu-ultra / none）" ;;
+      ROOT_REPO="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git";  ROOT_DIR="SukiSU-Ultra"
+      ROOT_BRANCH="main";        ROOT_MANAGER_NAME="SukiSU-Ultra Manager" ;;
+    kernelsu)
+      ROOT_REPO="https://github.com/tiann/KernelSU.git";             ROOT_DIR="KernelSU"
+      ROOT_BRANCH="main";        ROOT_MANAGER_NAME="KernelSU Manager" ;;
+    kernelsu-next)
+      ROOT_REPO="https://github.com/KernelSU-Next/KernelSU-Next.git"; ROOT_DIR="KernelSU-Next"
+      ROOT_BRANCH="dev";         ROOT_MANAGER_NAME="KernelSU Next Manager" ;;
+    kowsu)
+      ROOT_REPO="https://github.com/KOWX712/KernelSU.git";           ROOT_DIR="KowSU"
+      ROOT_BRANCH="master";      ROOT_MANAGER_NAME="KowSU Manager" ;;
+    *) die "不支持的 root: $ROOT_IMPL" ;;
   esac
 
-  [ -d "$SUKISU_DIR/kernel" ] || die "$SUKISU_DIR/kernel 不存在，仓库结构变了？"
+  # KowSU 与 SUSFS 不兼容：不硬失败，自动关掉并留下明显记录，
+  # 免得一次误勾把整份构建拖死（build.sh 会按 GITHUB_ENV 里的最终值校验）
+  if is_true "$SUSFS" && [ "$ROOT_IMPL" = "kowsu" ]; then
+    warn "KowSU 与 SUSFS 不兼容，已自动关闭 SUSFS"
+    SUSFS=false
+    echo "SUSFS=false" >> "${GITHUB_ENV:-/dev/null}"
+  fi
+
+  REF="${ROOT_REF:-$ROOT_BRANCH}"
+  ROOT_SRC="$WS/$ROOT_DIR"
+  rm -rf "$ROOT_SRC"
+  retry 3 git clone --depth 1 -b "$REF" "$ROOT_REPO" "$ROOT_SRC" \
+    || die "clone $ROOT_DIR（ref=$REF）失败"
+  [ -d "$ROOT_SRC/kernel" ] || die "$ROOT_DIR 里没有 kernel/，仓库结构变了？"
+  ROOT_COMMIT="$(git -C "$ROOT_SRC" rev-parse HEAD)"
+  info "$ROOT_DIR @ ${ROOT_COMMIT:0:12}"
 
   # 官方约定的接入方式：软链到 drivers/kernelsu，再挂 Kbuild / Kconfig
   rm -rf "$COMMON/drivers/kernelsu"
-  ln -sfn "$SUKISU_DIR/kernel" "$COMMON/drivers/kernelsu"
-
-  if ! grep -q 'kernelsu/' "$COMMON/drivers/Makefile"; then
-    echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$COMMON/drivers/Makefile"
-    info "drivers/Makefile += kernelsu/"
-  fi
+  ln -sfn "$ROOT_SRC/kernel" "$COMMON/drivers/kernelsu"
+  grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' "$COMMON/drivers/Makefile" \
+    || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$COMMON/drivers/Makefile"
 
   python3 - "$COMMON/drivers/Kconfig" <<'PY'
 import sys
@@ -124,56 +158,199 @@ with open(path, encoding="utf-8") as fh:
     text = fh.read()
 if "drivers/kernelsu/Kconfig" not in text:
     idx = text.rfind("endmenu")
-    if idx < 0:
-        text += src
-    else:
-        text = text[:idx] + src + text[idx:]
+    text = (text[:idx] + src + text[idx:]) if idx >= 0 else (text + src)
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(text)
     print("    drivers/Kconfig += source kernelsu/Kconfig")
 PY
 
-  if is_true "$SUSFS"; then
-    log "阶段 3/5：集成 SUSFS（$SUSFS_BRANCH）"
-    SUSFS_DIR="$WS/susfs4ksu"
-    [ -d "$SUSFS_DIR" ] || retry 3 git clone --depth 1 -b "$SUSFS_BRANCH" \
-      "$SUSFS_REPO" "$SUSFS_DIR" || die "clone susfs4ksu 失败"
+  # --- 各管理器已知的上游坑，逐个打平 ---
+  case "$ROOT_IMPL" in
+    kernelsu-next)
+      # Kbuild 在 mrproper（还没有 .config）阶段就 $(error)，会直接终止清理/配置
+      KB="$ROOT_SRC/kernel/Kbuild"
+      if [ -f "$KB" ] && grep -q 'KernelSU requires either CONFIG_KPROBES' "$KB"; then
+        sed -i 's/\$(error "KernelSU requires either CONFIG_KPROBES=y or CONFIG_KSU_SUSFS=y")/$(warning "KernelSU requires either CONFIG_KPROBES=y or CONFIG_KSU_SUSFS=y")/' "$KB"
+        info "Next: Kbuild 配置检查已降级为 warning"
+      fi
+      ;;
+    bakasu)
+      # 1) 子模块检查：从外部 clone 会被判定"应该用 git submodule"，直接 error
+      KB="$ROOT_SRC/kernel/Kbuild"
+      if [ -f "$KB" ] && grep -q 'as a git submodule instead of copying code directly' "$KB"; then
+        sed -i 's/\$(error You should use \$(REPO_NAME) as a git submodule instead of copying code directly)/$(warning You should use $(REPO_NAME) as a git submodule instead of copying code directly)/' "$KB"
+        info "BakaSU: 子模块检查已降级为 warning"
+      fi
+      # 2) susfs_compat.mk：SUSFS 版本对不上时它会让构建直接停掉
+      COMPAT="$ROOT_SRC/kernel/tools/susfs_compat.mk"
+      if [ -f "$COMPAT" ] && grep -q 'Please wait susfs update' "$COMPAT"; then
+        sed -i '/susfs has NOT update with latest KernelSU source/,$d' "$COMPAT"
+        info "BakaSU: 已移除 susfs_compat 的强制中断"
+      fi
+      ;;
+  esac
 
-    PATCH="$(find "$SUSFS_DIR/kernel_patches" -maxdepth 1 -name '50_add_susfs_in_*' | head -1)"
-    [ -n "$PATCH" ] || die "susfs4ksu 里找不到 50_add_susfs_in_* 补丁"
-
-    # 1) 内核侧：fs/susfs.c + include/linux/susfs*.h + 各处 hooked 调用点
-    apply_patch "$COMMON" "$PATCH" "susfs4ksu 50_add"
-
-    # 2) root 侧：把 susfs4ksu 的 KernelSU 胶水移植到 SukiSU（补丁已随仓库固定）
-    apply_patch "$SUKISU_DIR" "$WS/patches/susfs-for-sukisu-v4.3.0.patch" \
-      "SUSFS -> SukiSU 胶水"
-  fi
+  {
+    echo "ROOT_DIR=${ROOT_DIR}"
+    echo "ROOT_COMMIT=${ROOT_COMMIT}"
+    echo "ROOT_MANAGER_NAME=${ROOT_MANAGER_NAME}"
+  } >> "${GITHUB_ENV:-/dev/null}"
 fi
 
 # ---------------------------------------------------------------------------
-log "阶段 4/5：写内核配置"
+log "阶段 4/6：补丁（SUSFS + 附加功能）"
+# ---------------------------------------------------------------------------
+if is_true "$SUSFS"; then
+  [ "$ROOT_IMPL" != "none" ] || die "SUSFS 需要 root，不能是 none"
+
+  log "SUSFS（$SUSFS_BRANCH）"
+  SUSFS_SRC="$WS/susfs4ksu"
+  rm -rf "$SUSFS_SRC"
+  retry 3 git clone --depth 1 -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_SRC" \
+    || die "clone susfs4ksu 失败"
+  if [ -n "$SUSFS_COMMIT" ]; then
+    retry 3 git -C "$SUSFS_SRC" fetch --depth=1 origin "$SUSFS_COMMIT"
+    git -C "$SUSFS_SRC" checkout --detach "$SUSFS_COMMIT"
+  fi
+  info "SUSFS @ $(git -C "$SUSFS_SRC" rev-parse --short HEAD)"
+  echo "SUSFS_COMMIT=$(git -C "$SUSFS_SRC" rev-parse HEAD)" >> "${GITHUB_ENV:-/dev/null}"
+
+  SP="$SUSFS_SRC/kernel_patches"
+  # 新版 susfs4ksu 把 fs/susfs.c 与 include/linux/susfs*.h 单独放在补丁目录里拷；
+  # 老版本这三个文件是补丁内的新增文件 —— 两种布局都兼容
+  if [ -d "$SP/fs" ]; then
+    cp "$SP/fs/"* "$COMMON/fs/"
+    info "已拷入 fs/susfs.c"
+  fi
+  if [ -d "$SP/include/linux" ]; then
+    cp "$SP/include/linux/"* "$COMMON/include/linux/"
+    info "已拷入 include/linux/susfs*.h"
+  fi
+
+  MAIN_PATCH="$SP/50_add_susfs_in_${SUSFS_BRANCH}.patch"
+  if [ ! -f "$MAIN_PATCH" ]; then
+    MAIN_PATCH="$(find "$SP" -maxdepth 1 -name '50_add_susfs_in_*6.6*.patch' | head -1)"
+  fi
+  [ -n "$MAIN_PATCH" ] && [ -f "$MAIN_PATCH" ] || die "找不到 SUSFS 内核侧补丁（$SP）"
+  apply_patch "$COMMON" "$MAIN_PATCH" "SUSFS 内核侧 (${SUSFS_BRANCH})"
+
+  # 6.6 上的固定编译坑（补 include / VMA_PAD_START / fanotify 回调签名），幂等
+  python3 "$WS/project/susfs_66_compat.py" "$COMMON" "$GOT_SUB"
+
+  # root 侧的 SUSFS 胶水：先探测仓库自带的 Kconfig 有没有 KSU_SUSFS
+  if grep -qE '^[[:space:]]*config KSU_SUSFS$' "$ROOT_SRC/kernel/Kconfig" 2>/dev/null; then
+    info "$ROOT_DIR 自带 SUSFS 胶水（Kconfig 有 KSU_SUSFS），无需额外补丁"
+  else
+    case "$ROOT_IMPL" in
+      kernelsu)
+        ENABLE_PATCH="$SP/KernelSU/10_enable_susfs_for_ksu.patch"
+        [ -f "$ENABLE_PATCH" ] || die "缺少 $ENABLE_PATCH"
+        apply_patch "$ROOT_SRC" "$ENABLE_PATCH" "KernelSU SUSFS 使能"
+        ;;
+      sukisu-ultra)
+        # 上游补丁是给 tiann KernelSU 写的，直接套会引入大量重构；
+        # 用已验证的移植补丁（只保留 SUSFS 相关 hunk）
+        apply_patch "$ROOT_SRC" "$WS/patches/susfs-for-sukisu-v4.3.0.patch" \
+          "SUSFS -> SukiSU 胶水"
+        ;;
+      *)
+        die "$ROOT_DIR 既没有自带 KSU_SUSFS，也没有对应的胶水补丁；请把 susfs 关掉再构建"
+        ;;
+    esac
+  fi
+fi
+
+# --- 通用补丁集（按需 clone）---
+KP="$WS/kernel_patches"
+fetch_kernel_patches() {
+  [ -d "$KP" ] && return 0
+  log "同步通用补丁集（WildKernels/kernel_patches）"
+  retry 3 git clone --depth 1 -b "$KERNEL_PATCHES_REF" "$KERNEL_PATCHES_REPO" "$KP" \
+    || die "clone kernel_patches 失败"
+}
+
+if is_true "$NTSYNC"; then
+  log "附加功能：NTSync"
+  fetch_kernel_patches
+  apply_patch "$COMMON" "$KP/common/ntsync/ntsync_compat_android15-6.6.patch" "NTSync 兼容层"
+  apply_patch "$COMMON" "$KP/common/ntsync/ntsync_base.patch" "NTSync 主体"
+fi
+
+if is_true "$NETWORKING"; then
+  log "附加功能：BBRv3"
+  fetch_kernel_patches
+  if apply_patch_optional "$COMMON" \
+       "$KP/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch" "BBRv3 回移"; then
+    echo "BBRV3_APPLIED=true" >> "${GITHUB_ENV:-/dev/null}"
+  else
+    warn "BBRv3 补丁不适用，回退到内核自带 BBR（功能不受影响，只是算法版本不同）"
+    echo "BBRV3_APPLIED=false" >> "${GITHUB_ENV:-/dev/null}"
+    # 回退时不要让默认拥塞控制指向不存在的算法
+    sed -i '/^CONFIG_DEFAULT_TCP_CONG=/d' "$WS/configs/features/networking.fragment"
+  fi
+fi
+
+if is_true "$UNICODE"; then
+  log "附加功能：Unicode 绕过修复"
+  fetch_kernel_patches
+  apply_patch_optional "$COMMON" "$KP/common/unicode_bypass_fix_6.1+.patch" "Unicode bypass fix" || true
+fi
+
+if is_true "$DROIDSPACES"; then
+  log "附加功能：DroidSpaces-OSS"
+  rm -rf "$WS/Droidspaces-OSS"
+  retry 3 git clone --depth 1 https://github.com/ravindu644/Droidspaces-OSS.git \
+    "$WS/Droidspaces-OSS" || die "clone Droidspaces-OSS 失败"
+  KABI="$WS/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI/below-kernel-6.12/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
+  [ -f "$KABI" ] || die "找不到 DroidSpaces SYSVIPC kABI 补丁（上游目录结构变了？）"
+  apply_patch "$COMMON" "$KABI" "DroidSpaces SYSVIPC kABI"
+fi
+
+if is_true "$NOMOUNT"; then
+  log "附加功能：NoMount"
+  run_remote_setup "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_REF}/kernel/setup.sh" \
+    "$COMMON" "$NOMOUNT_REF"
+  [ -e "$COMMON/fs/nomount" ] || warn "没看到 fs/nomount，NoMount 可能没装好"
+fi
+
+if is_true "$BBG"; then
+  log "附加功能：Baseband Guard"
+  run_remote_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh" "$KROOT"
+  [ -d "$COMMON/security/baseband-guard" ] || die "BBG 安装后找不到 security/baseband-guard"
+  # 把 baseband_guard 排进默认 LSM 顺序（已包含则不动）
+  sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' \
+    "$COMMON/security/Kconfig"
+  grep -q 'baseband_guard' "$COMMON/security/Kconfig" \
+    || warn "security/Kconfig 里没找到 baseband_guard，请检查上游 setup.sh 是否改过路径"
+fi
+
+# ---------------------------------------------------------------------------
+log "阶段 5/6：写内核配置"
 # ---------------------------------------------------------------------------
 cp "$WS/configs/warsaw_defconfig" "$OUT/.config"
-info "基础配置：原厂 .config（取自 boot.img 内嵌 IKCONFIG，7756 行）"
+info "基础配置：原厂 .config（取自 boot.img 内嵌 IKCONFIG）"
 
 apply_fragment "$WS/configs/base.fragment"
 set_cfg LOCALVERSION "$LOCALVERSION"
 
 if [ "$ROOT_IMPL" != "none" ]; then
-  apply_fragment "$WS/configs/root/sukisu-ultra.fragment"
-  if is_true "$SUSFS"; then
-    apply_fragment "$WS/configs/features/susfs.fragment"
-  fi
+  apply_fragment "$WS/configs/root/$ROOT_IMPL.fragment"
 fi
 
+if is_true "$SUSFS";       then info "--- SUSFS ---";       apply_fragment "$WS/configs/features/susfs.fragment"; fi
+if is_true "$NTSYNC";      then info "--- NTSync ---";      apply_fragment "$WS/configs/features/ntsync.fragment"; fi
+if is_true "$NETWORKING";  then info "--- Networking ---";  apply_fragment "$WS/configs/features/networking.fragment"; fi
+if is_true "$NOMOUNT";     then info "--- NoMount ---";     apply_fragment "$WS/configs/features/nomount.fragment"; fi
+if is_true "$BBG";         then info "--- BBG ---";         apply_fragment "$WS/configs/features/bbg.fragment"; fi
+if is_true "$DROIDSPACES"; then info "--- DroidSpaces ---"; apply_fragment "$WS/configs/features/droidspaces.fragment"; fi
+if is_true "$BPF";         then info "--- BTF/eBPF ---";    apply_fragment "$WS/configs/features/bpf.fragment"; fi
+
 # ---------------------------------------------------------------------------
-log "阶段 5/5：准备构建环境"
+log "阶段 6/6：准备构建环境"
 # ---------------------------------------------------------------------------
 CLANG_DIR="$(find "$KROOT/prebuilts/clang/host/linux-x86" -maxdepth 1 -type d -name 'clang-r*' \
              | sort -V | tail -1)"
 [ -n "$CLANG_DIR" ] || die "找不到 prebuilts/clang（repo sync 不完整？）"
-
 BUILD_TOOLS="$KROOT/prebuilts/build-tools/linux-x86/bin"
 [ -d "$BUILD_TOOLS" ] || die "找不到 prebuilts/build-tools"
 
@@ -183,14 +360,24 @@ BUILD_TOOLS="$KROOT/prebuilts/build-tools/linux-x86/bin"
 } >> "${GITHUB_ENV:-/dev/null}"
 
 export PATH="$CLANG_DIR/bin:$BUILD_TOOLS:$PATH"
-info "clang       : $CLANG_DIR ($("$CLANG_DIR/bin/clang" --version | head -1))"
-
+info "clang  : $CLANG_DIR ($("$CLANG_DIR/bin/clang" --version | head -1))"
 if command -v pahole >/dev/null 2>&1; then
-  info "pahole      : $(pahole --version 2>/dev/null || echo 未知)"
+  info "pahole : $(pahole --version 2>/dev/null || echo 未知)"
 else
-  warn "PATH 里没有 pahole（DEBUG_INFO_BTF=y 需要它，构建阶段会尝试系统包）"
+  warn "PATH 里没有 pahole（DEBUG_INFO_BTF=y 需要它）"
+fi
+
+# 让版本号保持干净：工作区有未提交改动时 setlocalversion 可能追加标记
+if git -C "$COMMON" rev-parse --git-dir >/dev/null 2>&1; then
+  ( cd "$COMMON" \
+    && git add -A >/dev/null 2>&1 \
+    && git -c user.name="k90-ci" -c user.email="k90-ci@localhost" \
+         commit -q -m "ci: apply kernel patches and config" >/dev/null 2>&1 ) || true
 fi
 
 log "准备完成"
-info "内核源码 : $COMMON"
-info "配置文件 : $OUT/.config"
+info "root     : ${ROOT_IMPL}${ROOT_COMMIT:+ @ ${ROOT_COMMIT:0:12}}"
+info "SUSFS    : ${SUSFS}"
+info "功能     : ntsync=${NTSYNC} networking=${NETWORKING} nomount=${NOMOUNT} bbg=${BBG} droidspaces=${DROIDSPACES} bpf=${BPF} unicode=${UNICODE}"
+info "源码     : $COMMON"
+info "配置     : $OUT/.config"

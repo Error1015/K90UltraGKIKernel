@@ -1,0 +1,2 @@
+# Baseband Guard：保护 efs / modem 等基带分区
+CONFIG_BBG=y

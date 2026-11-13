@@ -1,0 +1,11 @@
+# BakaSU（默认 root）
+# 符号由 BakaSU/kernel/Kconfig 提供（prepare.sh 已把 drivers/kernelsu 软链过去）
+CONFIG_KSU=y
+
+# 只信任 BakaSU 自己的管理器签名。
+# 开着这个会把 tiann/KernelSU 与 KOWX712/KernelSU 的证书一起编进 apk_sign_keys[]，
+# 关掉之后只剩 EXPECTED_*_BAKASU 一行 —— 刷别的管理器 APK 会显示"未安装"，这是预期行为。
+CONFIG_KSU_MULTI_MANAGER_SUPPORT=n
+
+# ksu_toolkit 运行时接口（backslashxx/ksu_toolkit）：改 spoof/uname/ksuver 等参数
+CONFIG_KSU_TOOLKIT_SUPPORT=y

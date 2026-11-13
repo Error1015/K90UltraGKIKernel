@@ -1,0 +1,2 @@
+# NoMount：VFS 层无挂载点伪装（符号由上游 kernel/setup.sh 提供的 Kconfig 定义）
+CONFIG_NOMOUNT=y

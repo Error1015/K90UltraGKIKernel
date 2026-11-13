@@ -1,0 +1,2 @@
+# KowSU —— 与 SUSFS 不兼容，选它时 prepare.sh 会拒绝 susfs=true
+CONFIG_KSU=y

@@ -1,7 +1,8 @@
 # K90 Ultra GKI Kernel（warsaw / SM8750 / 6.6）
 
 为 **Redmi K90 Ultra（代号 warsaw，SM8750，内核 6.6.118，4K 页）** 构建 GKI 内核，
-内置 **SukiSU-Ultra + SUSFS**，产物是一个 **可以直接 `fastboot flash boot` 的完整 boot.img**。
+默认内置 **BakaSU + SUSFS**（也支持 SukiSU-Ultra / KernelSU / KernelSU-Next / KowSU），
+产物是一个 **可以直接 `fastboot flash boot` 的完整 boot.img**。
 
 > **这一版是重做的。** 旧版"构建成功但刷进去卡 logo"的根因已经定位（见第二节），
 > 旧代码整体放在 `legacy/` 里仅作参考，不再参与构建。
@@ -54,7 +55,7 @@ AVB 校验必然失败 —— 表现就是**卡在 logo、不 panic、不重启*
 ## 二、现在的做法
 
 ```
-project/prepare.sh   repo sync ACK → 锁到 6.6.118 的发布 tag → 集成 SukiSU/SUSFS → 写配置
+project/prepare.sh   repo sync ACK → 锁到 6.6.118 的发布 tag → 集成 root/SUSFS/附加功能 → 写配置
 project/build.sh     make ARCH=arm64 LLVM=1 O=out Image → 逐项回读校验 → 产物自检
 project/pack.py      把 Image 打进「原厂布局」的 boot.img（重定位 vbmeta + 重写 AVB footer）
 project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一项不过就不发布
@@ -78,10 +79,40 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 
 | 包 | 内容 | 用途 |
 | --- | --- | --- |
-| `boot-warsaw-vanilla-6.6.118.img` | 纯内核，不带 root | 先证明内核本身能起 |
-| `boot-warsaw-sukisu-6.6.118.img` | SukiSU-Ultra + SUSFS | 日常使用 |
+| `boot-warsaw-vanilla-6.6.118.img` | 纯内核，不带 root、不带功能 | 先证明内核本身能起 |
+| `boot-warsaw-<root>-6.6.118.img` | 选定 root（默认 bakasu）+ SUSFS + 勾选的附加功能 | 日常使用 |
 
 两份都是 96MB 完整分区镜像，**没有 zip，不要用 recovery 刷**。
+
+### root 支持情况
+
+| root | 状态 | 说明 |
+| --- | --- | --- |
+| `bakasu` | **默认** | 自带 SUSFS 胶水与 ksu_toolkit；关掉多管理器支持，只认自己的 APK |
+| `sukisu-ultra` | 支持 | 自带 SUSFS 胶水；若某版没有，会自动套用仓库内置的移植补丁 |
+| `kernelsu` | 支持 | tiann 原版，SUSFS 需要 susfs4ksu 的 `10_enable_susfs_for_ksu.patch`（自动打） |
+| `kernelsu-next` | 支持 | 默认分支 `dev`；顺带修掉它 Kbuild 在 mrproper 阶段就 `$(error)` 的坑 |
+| `kowsu` | 支持 | **与 SUSFS 不兼容**，勾了 SUSFS 会自动关掉并提示 |
+| `none` | 支持 | 纯内核，等价于只要 vanilla 那份 |
+
+SUSFS 胶水是运行时探测的：先看 root 仓库自己的 `Kconfig` 里有没有 `config KSU_SUSFS`，
+有就不动，没有才打对应的使能补丁 —— 这样各家版本升级不会一次把流水线卡死。
+
+### 附加功能
+
+| 输入 | 做什么 | 实现方式 |
+| --- | --- | --- |
+| `susfs` | SUSFS 内核侧补丁 + 10 项 `CONFIG_KSU_SUSFS_*` | susfs4ksu + 各 root 的胶水 |
+| `ntsync` | NTSync（Proton / Wine 同步原语） | kernel_patches 两个补丁 |
+| `networking` | BBRv3 + IPSet + CIFS，默认拥塞控制 `bbr` | BBRv3 补丁失败时自动回退到内核自带 BBR |
+| `nomount` | NoMount（VFS 层无挂载点伪装） | 走上游 `kernel/setup.sh` |
+| `bbg` | Baseband Guard（保护 efs / modem） | 走上游 `setup.sh` + 自动排进 LSM 顺序 |
+| `droidspaces` | DroidSpaces 容器所需 namespace / IPC | kABI 补丁 + 配置项 |
+| `bpf` | BTF / eBPF（出厂已是 `y`，一般不用勾） | 只改配置 |
+| `unicode` | Unicode 绕过修复 | kernel_patches，补丁不适用则跳过并告警 |
+
+所有附加功能默认**全关**。每勾一个，`build.sh` 都会在 `olddefconfig` 之后回读最终
+`.config` 确认符号真的生效 —— 补丁打了但配置没生效会直接中断构建，不会出"看起来有其实没有"的包。
 
 ---
 
@@ -91,15 +122,16 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 Actions → Build K90 Ultra GKI → Run workflow
 ```
 
-默认参数（`kernel_release=6.6.118`、`root=sukisu-ultra`、`susfs=true`）直接跑即可，
+默认参数（`kernel_release=6.6.118`、`root=bakasu`、`susfs=true`）直接跑即可，
 约 20~35 分钟（矩阵两个 job 并行）。
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `kernel_release` | `6.6.118` | 手机 `uname -r` 的版本。会自动解析出同版本的 ACK 发布 tag 并锁源码；解析不到会回退到分支 HEAD，但随后会因为版本校验不通过而**中断**（不会产出包） |
 | `kernel_tag` | 空 | 直接钉 ACK tag，例如 `android15-6.6-2026-XX_rN`，填了就忽略 `kernel_release` |
-| `root` | `sukisu-ultra` | 也可以选 `none`（等价于只要 vanilla 那份） |
-| `susfs` | `true` | 需要 root 不为 none |
+| `root` | `bakasu` | 可选 `bakasu` / `sukisu-ultra` / `kernelsu` / `kernelsu-next` / `kowsu` / `none` |
+| `susfs` | `true` | 需要 root 不为 none；kowsu 会自动关掉 |
+| `nomount` / `bbg` / `ntsync` / `networking` / `bpf` / `droidspaces` / `unicode` | `false` | 附加功能，见上一节 |
 | `localversion` | `-android15-8-warsaw-4k` | 保留 `-android15-8` 前缀（KMI 标识） |
 | `release` | `release` | `release` / `prerelease` / `none`（只留 Artifacts） |
 
@@ -128,7 +160,15 @@ fastboot reboot
 ```
 
 刷完管理器首页应该显示 **GKI 模式 / 已安装**，不需要再 patch 任何分区。
-包里内置的是 SukiSU-Ultra 的内核代码，**必须装 SukiSU-Ultra 的管理器 APK**，装别家会显示"未安装"。
+包里集成的是哪个管理器的内核代码，就**必须装哪一个的管理器 APK**，装别家会显示"未安装"：
+
+| 内核里集成的 | 需要安装的管理器 |
+| --- | --- |
+| `bakasu` | [BakaSU](https://github.com/Baka-SU/BakaSU/releases) |
+| `sukisu-ultra` | [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases) |
+| `kernelsu` | [KernelSU](https://github.com/tiann/KernelSU/releases) |
+| `kernelsu-next` | [KernelSU Next](https://github.com/KernelSU-Next/KernelSU-Next/releases) |
+| `kowsu` | [KowSU](https://github.com/KOWX712/KernelSU/releases) |
 
 ### 想先不写 flash 试一下
 
@@ -156,20 +196,22 @@ fastboot boot boot-warsaw-sukisu-6.6.118.img   # 只在内存里起一次，重�
 ## 六、目录
 
 ```
-.github/workflows/build.yml   唯一构建入口（vanilla / sukisu 两条并行）
+.github/workflows/build.yml   唯一构建入口（vanilla + 选定 root 两条并行）
 project/
-  prepare.sh                  同步源码 + 锁版本 + 集成 root/SUSFS + 写配置
+  prepare.sh                  同步源码 + 锁版本 + 集成 root/SUSFS/附加功能 + 写配置
   build.sh                    make Image + 配置回读 + 产物自检
   pack.py                     AVB 感知的 boot.img 打包/检查
   verify.py                   发布前验收（结构 + 版本 + 内嵌配置）
+  template.py                 从原厂 boot.img 重新生成打包模板
   resolve_tag.py              6.6.118 → ACK 发布 tag
   pin_manifest.py             把 manifest 里 common 的 revision 钉到 tag
+  susfs_66_compat.py          SUSFS 在 6.6 上的固定编译坑（幂等）
   lib.sh                      日志 / 补丁 / 配置片段
 configs/
   warsaw_defconfig            原厂完整配置（从 boot.img 提取，勿手改）
   base.fragment               必须项（关符号裁剪、版本串）
-  root/sukisu-ultra.fragment  CONFIG_KSU=y
-  features/susfs.fragment     SUSFS 10 个开关
+  root/{bakasu,sukisu-ultra,kernelsu,kernelsu-next,kowsu}.fragment
+  features/{susfs,ntsync,networking,nomount,bbg,droidspaces,bpf}.fragment
 patches/
   susfs-for-sukisu-v4.3.0.patch   susfs4ksu → SukiSU 的胶水移植（来自已验证案例）
 firmware/
@@ -178,7 +220,7 @@ firmware/
 tools/
   check-device.sh             连手机只读自检
   get-last-log.sh             抓上一次开机的 pstore
-legacy/                       旧流水线（Kleaf + AK3），仅作参考
+legacy/                       旧流水线（Kleaf + AK3）与旧配置，仅作参考
 ```
 
 ### firmware 模板要跟着固件走
@@ -195,20 +237,26 @@ python project/template.py stock_boot.img          # 重新生成 firmware/boot-
 
 ---
 
-## 七、这一版的范围
+## 七、加功能的顺序（重要）
 
-**只做 root + SUSFS。** NoMount / Baseband Guard / NTSync / DroidSpaces / 各类网络增强
-这一版没有做进去 —— 它们都要改 VFS、块设备或 net 层，是最容易"内核活着但 Android 起不来"的部分。
-先让这台机器稳定跑起来，再按"一次只加一层"的方式往回加。
+补丁越多，"内核活着但 Android 起不来"的概率越高。建议一次只加一层，每层都能开机再往下走：
 
-需要加的时候的顺序建议：`vanilla` → `sukisu` → 再加 SUSFS 以外的第一个补丁 → 逐个二分。
+```
+① vanilla（root=none）                 → 证明内核 + 打包没问题
+② root=bakasu，susfs=true              → 证明 root 方案可用
+③ 单个附加功能（先 networking 或 ntsync，它们只碰 net / 内核内部）
+④ 最后再上 nomount / bbg               → 这两个要改 VFS 与块设备层，风险最高
+```
+
+任何一层起不来，就把那一层关掉重跑 —— 因为矩阵里永远有 vanilla 那份做对照，
+能立刻区分"是内核/打包的问题"还是"某个补丁的问题"。
 
 ---
 
 ## 八、致谢
 
 - [Android Common Kernel](https://android.googlesource.com/kernel/common) — GKI 源码
-- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) — root
+- [BakaSU](https://github.com/Baka-SU/BakaSU)、[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra)、[KernelSU](https://github.com/tiann/KernelSU)、[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next)、[KowSU](https://github.com/KOWX712/KernelSU) — root
 - [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) — SUSFS
 - [wjljh/xiaomi_kernel_for_warsaw_sukisu_susfs](https://github.com/wjljh/xiaomi_kernel_for_warsaw_sukisu_susfs) — 同机型的真机验证案例，boot.img 布局与 AVB 处理、SUSFS 移植补丁均出自这里
 - [WildKernels/GKI_KernelSU_SUSFS](https://github.com/WildKernels/GKI_KernelSU_SUSFS) — 构建流程参考
