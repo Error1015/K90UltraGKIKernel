@@ -97,6 +97,75 @@ def fix_fanotify_arity(kernel: Path) -> None:
         notes.append("fanotify 回调签名无需调整")
 
 
+def fix_priority_uid_filter_guard(kernel: Path) -> None:
+    """susfs_switch_to_ksu_domain / susfs_restore_creds 只在
+    CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 的块里被调用。多数 root 实现的
+    Kconfig 还没有这个符号（上游 susfs4ksu 比它们新），olddefconfig 会把它
+    静默丢掉，于是那个块被编译掉，两个 static 函数变成未使用：
+
+        error: unused function 'susfs_switch_to_ksu_domain' [-Werror,-Wunused-function]
+
+    给这两个函数补上和调用点一模一样的条件编译保护，符号在就照常编进去，
+    符号不在就一起编译掉，两种情况都不会触发 -Werror。
+    """
+    path = kernel / "fs/susfs.c"
+    if not path.exists():
+        return
+    src = read(path)
+    guard = "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
+    if f"#ifdef {guard}" not in src and f"#if defined({guard})" not in src:
+        # 上游没有这个特性，函数一定被用到，不用动
+        return
+
+    lines = src.splitlines(keepends=True)
+
+    def find(pattern: str) -> int:
+        for i, line in enumerate(lines):
+            if re.match(pattern, line):
+                return i
+        return -1
+
+    i_switch = find(r"^\s*static\s+struct\s+cred\s*\*\s*susfs_switch_to_ksu_domain\s*\(")
+    i_restore = find(r"^\s*static\s+void\s+susfs_restore_creds\s*\(")
+    if i_switch < 0 or i_restore < 0:
+        notes.append("fs/susfs.c: 没找到 cred 辅助函数，跳过守卫")
+        return
+
+    # 已经加过保护（幂等）：往上找一段，注释块本身就占 7~10 行
+    for line in lines[max(0, i_switch - 40): i_switch]:
+        text = line.strip()
+        if guard in text and text.startswith(("#ifdef", "#if defined")):
+            notes.append("fs/susfs.c: cred 辅助函数已有条件编译保护")
+            return
+
+    # 起点：连同紧贴的函数注释块一起包进去
+    start = i_switch
+    while start > 0:
+        text = lines[start - 1].strip()
+        if text == "" or text.startswith(("/*", "*", "*/")) or text.endswith("*/"):
+            start -= 1
+            continue
+        break
+    while start < i_switch and lines[start].strip() == "":
+        start += 1
+
+    # 终点：susfs_restore_creds 的收尾大括号
+    end = -1
+    for i in range(i_restore, len(lines)):
+        if lines[i].rstrip("\r\n") == "}":
+            end = i
+            break
+    if end < 0:
+        notes.append("fs/susfs.c: 没找到 susfs_restore_creds 的结束位置，跳过守卫")
+        return
+
+    indent = ""
+    lines.insert(end + 1, f"{indent}#endif /* {guard} */\n")
+    lines.insert(start, f"{indent}#ifdef {guard}\n")
+    write(path, "".join(lines))
+    notes.append(f"fs/susfs.c: 给 cred 辅助函数补上 #ifdef {guard} 保护")
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("用法: susfs_66_compat.py <内核根目录> [sublevel]", file=sys.stderr)
@@ -121,6 +190,7 @@ def main() -> int:
     )
     fix_vma_pad_start(kernel)
     fix_fanotify_arity(kernel)
+    fix_priority_uid_filter_guard(kernel)
 
     for note in notes:
         print(f"    {note}")

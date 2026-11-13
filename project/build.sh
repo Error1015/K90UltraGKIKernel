@@ -42,7 +42,13 @@ if [ "$ROOT_IMPL" != "none" ]; then
   require_cfg KSU y
   if is_true "$SUSFS"; then
     require_cfg KSU_SUSFS y
-    require_cfg KSU_SUSFS_SUS_PATH y
+    # 片段里写了的每个 SUSFS 开关都回读一遍：符号存在但没生效 → 直接中断；
+    # 该 root 的 Kconfig 压根没有这个符号 → 提示后跳过（不算错）。
+    # 这样"片段写了、olddefconfig 静默丢掉"不会再悄悄溜过去。
+    while read -r sym; do
+      expect_cfg "$sym" y
+    done < <(sed -n 's/^CONFIG_\(KSU_SUSFS[A-Z0-9_]*\)=y$/\1/p' \
+               "$WS/configs/features/susfs.fragment" | grep -vx 'KSU_SUSFS')
   fi
 fi
 

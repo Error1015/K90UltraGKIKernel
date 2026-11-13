@@ -177,3 +177,18 @@ require_cfg() {
   esac
   info "[OK] CONFIG_${name}=${want}"
 }
+
+# 与 require_cfg 的区别：符号在该 root 的 Kconfig 里压根不存在时不算错。
+# Kconfig 不认识的符号会被 olddefconfig 整个丢掉，最终 .config 里连
+# "# CONFIG_X is not set" 都不会留 —— 两种情况必须分开对待：
+#   · 存在但没生效 → 硬失败（依赖不满足 / 被别的符号顶掉）
+#   · 压根不存在   → 提示后跳过（该 root 没这个能力，比如 BakaSU 没有
+#                    KSU_SUSFS_PRIORITY_UID_FILTER）
+expect_cfg() {
+  local name="${1#CONFIG_}" want="${2:-y}" file="${3:-$OUT/.config}"
+  if grep -qE "^(CONFIG_${name}=|# CONFIG_${name} is not set)" "$file"; then
+    require_cfg "$name" "$want" "$file"
+  else
+    warn "CONFIG_${name} 在该 root 的 Kconfig 里不存在，跳过（对应功能不可用）"
+  fi
+}
