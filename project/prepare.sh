@@ -27,7 +27,9 @@ SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
 SUSFS_COMMIT="${SUSFS_COMMIT:-}"
 
 NOMOUNT="${NOMOUNT:-false}"
-NOMOUNT_REF="${NOMOUNT_REF:-main}"
+# 留空 = 让 NoMount 的 setup.sh 自己选默认分支（dev，回退 master）
+# 注意：maxsteeel/nomount 没有 main 分支，传 "main" 会 git checkout 失败
+NOMOUNT_REF="${NOMOUNT_REF:-}"
 BBG="${BBG:-false}"
 NTSYNC="${NTSYNC:-false}"
 NETWORKING="${NETWORKING:-false}"
@@ -360,9 +362,20 @@ fi
 
 if is_true "$NOMOUNT"; then
   log "附加功能：NoMount"
-  run_remote_setup "https://raw.githubusercontent.com/maxsteeel/nomount/${NOMOUNT_REF}/kernel/setup.sh" \
-    "$COMMON" "$NOMOUNT_REF"
-  [ -e "$COMMON/fs/nomount" ] || warn "没看到 fs/nomount，NoMount 可能没装好"
+  # setup.sh 的第一个参数是 tag/commit（不是分支名）。不传时它自己 checkout dev。
+  # 这个仓库没有 main 分支 —— 传 main 会得到 "pathspec 'main' did not match"。
+  NOMOUNT_BASE="https://raw.githubusercontent.com/maxsteeel/nomount"
+  if [ -n "${NOMOUNT_REF:-}" ]; then
+    run_remote_setup "$NOMOUNT_BASE/${NOMOUNT_REF}/kernel/setup.sh" "$COMMON" "$NOMOUNT_REF"
+  else
+    run_remote_setup "$NOMOUNT_BASE/dev/kernel/setup.sh" "$COMMON"
+  fi
+  [ -e "$COMMON/fs/nomount" ] || die "NoMount 装完没看到 fs/nomount 软链"
+  [ -f "$COMMON/fs/nomount/Kconfig" ] || die "NoMount 装完找不到 fs/nomount/Kconfig（Kconfig 没挂上）"
+  # 它会把整个仓库 clone 进内核树，别让收尾的 git add -A 把它卷进提交
+  mkdir -p "$COMMON/.git/info"
+  grep -qxF 'NoMount' "$COMMON/.git/info/exclude" 2>/dev/null \
+    || echo 'NoMount' >> "$COMMON/.git/info/exclude"
 fi
 
 if is_true "$BBG"; then
