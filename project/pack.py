@@ -43,18 +43,19 @@ def load_template(template_dir: str):
         blob = fh.read()
 
     header_bytes = meta["header_bytes"]
-    if len(blob) != header_bytes + meta["vbmeta_size"]:
-        raise SystemExit(
-            f"模板损坏：期望 {header_bytes + meta['vbmeta_size']} 字节，实际 {len(blob)}"
-        )
+    tail_size = meta.get("tail_size", 0)
+    expect = header_bytes + meta["vbmeta_size"] + tail_size
+    if len(blob) != expect:
+        raise SystemExit(f"模板损坏：期望 {expect} 字节，实际 {len(blob)}")
     header = blob[:header_bytes]
-    vbmeta = blob[header_bytes:]
+    vbmeta = blob[header_bytes:header_bytes + meta["vbmeta_size"]]
+    tail = blob[header_bytes + meta["vbmeta_size"]:]
 
     if header[:8] != BOOT_MAGIC:
         raise SystemExit("模板头部 magic 不是 ANDROID!")
     if vbmeta[:4] != VBMETA_MAGIC:
         raise SystemExit("模板里的 vbmeta 不是 AVB0")
-    return meta, bytearray(header), vbmeta
+    return meta, bytearray(header), vbmeta, tail
 
 
 def read_footer(data: bytes):
@@ -72,7 +73,7 @@ def read_footer(data: bytes):
 
 
 def pack(image_path: str, out_path: str, template_dir: str) -> int:
-    meta, header, vbmeta = load_template(template_dir)
+    meta, header, vbmeta, tail = load_template(template_dir)
     part_size = meta["partition_size"]
 
     with open(image_path, "rb") as fh:
@@ -82,7 +83,10 @@ def pack(image_path: str, out_path: str, template_dir: str) -> int:
 
     kernel_size = len(image)
     kernel_end = PAGE + kernel_size
-    vbmeta_offset = round_up(kernel_end, PAGE)
+    aligned = round_up(kernel_end, PAGE)
+    # 原厂在 [页对齐, original_image_size) 之间还有一段自己的 AVB 元数据，原样搬过去
+    tail_end = aligned + len(tail)
+    vbmeta_offset = tail_end
     vbmeta_end = vbmeta_offset + len(vbmeta)
 
     if vbmeta_end + FOOTER > part_size:
@@ -96,6 +100,8 @@ def pack(image_path: str, out_path: str, template_dir: str) -> int:
     struct.pack_into("<I", out, 8, kernel_size)   # kernel_size
     struct.pack_into("<I", out, 12, 0)            # ramdisk_size（本机内核与 ramdisk 分离，必须为 0）
     out[PAGE:kernel_end] = image
+    if tail:
+        out[aligned:tail_end] = tail
     out[vbmeta_offset:vbmeta_end] = vbmeta
 
     fpos = part_size - FOOTER
@@ -113,6 +119,7 @@ def pack(image_path: str, out_path: str, template_dir: str) -> int:
     os.replace(tmp, out_path)
 
     print(f"    模板内核   : {meta['stock_kernel_size']} 字节 -> 新内核 {kernel_size} 字节")
+    print(f"    原厂尾部   : {len(tail)} 字节（页对齐 {aligned} 起，原样保留）")
     print(f"    vbmeta     : 偏移 {vbmeta_offset}（{len(vbmeta)} 字节）")
     print(f"    输出大小   : {len(out)} 字节（= 分区大小 {part_size}）")
     print(f"    写入       : {out_path}")
@@ -159,9 +166,14 @@ def inspect(path: str) -> int:
         print(f"    vbmeta_offset       : {foot['vbmeta_offset']}")
         print(f"    vbmeta_size         : {foot['vbmeta_size']}")
 
-        expect = round_up(kernel_end, PAGE)
-        if foot["vbmeta_offset"] != expect:
-            print(f"  [!] vbmeta_offset 与内核末尾不对齐（期望 {expect}）—— AVB 会失败")
+        aligned = round_up(kernel_end, PAGE)
+        if foot["vbmeta_offset"] < aligned:
+            print(f"  [!] vbmeta_offset({foot['vbmeta_offset']}) 落进内核/尾部保护区"
+                  f"（页对齐至少 {aligned}）")
+            ok = False
+        if foot["original_image_size"] != foot["vbmeta_offset"]:
+            print(f"  [!] original_image_size({foot['original_image_size']}) "
+                  f"与 vbmeta_offset 不一致 —— 原厂的取值是两者相等")
             ok = False
 
         vb = data[foot["vbmeta_offset"]:foot["vbmeta_offset"] + foot["vbmeta_size"]]
@@ -170,6 +182,8 @@ def inspect(path: str) -> int:
             ok = False
         else:
             print("    vbmeta 内容         : AVB0 ✓")
+            print(f"    页对齐/尾部         : 内核止于 {kernel_end}，页对齐 {aligned}，"
+                  f"尾部 {foot['vbmeta_offset'] - aligned} 字节")
 
         if foot["original_image_size"] > len(data):
             print("  [!] original_image_size 超过文件长度")

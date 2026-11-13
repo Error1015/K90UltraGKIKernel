@@ -16,9 +16,9 @@ on:
       # 内核版本 / tag / 版本串 / 页大小 / 分区大小全部锁在 project/device.env，
       # 不再作为输入暴露 —— 这个仓库只服务 K90 Ultra 一台机器，填错只会编出 KMI 不匹配的包。
       root:
-        description: 'root 实现（bakasu 单个 / all 一次出全部 5 个）'
+        description: 'root 实现（bakasu 单个 / all 出全部 5 个 / diag 出 4 个诊断包用来二分卡开机）'
         type: choice
-        options: [bakasu, all, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
+        options: [bakasu, all, diag, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
         default: bakasu
       susfs:
         description: 'SUSFS（选 kowsu 时会自动关掉）'
@@ -121,6 +121,7 @@ jobs:
     env:
       ROOT_IMPL: ${{ matrix.root }}
       SUSFS: ${{ matrix.susfs }}
+      SIGPROTECT: ${{ matrix.sigprotect }}
       NOMOUNT: ${{ matrix.nomount }}
       BBG: ${{ matrix.bbg }}
       NTSYNC: ${{ matrix.ntsync }}

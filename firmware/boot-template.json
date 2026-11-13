@@ -5,7 +5,11 @@
   "header_version": 4,
   "header_bytes": 4096,
   "vbmeta_size": 2368,
-  "template_bytes": 6464,
+  "tail_size": 16384,
+  "template_bytes": 22848,
   "stock_kernel_size": 36801024,
+  "stock_aligned": 36806656,
+  "stock_original_image_size": 36823040,
+  "stock_ramdisk_size": 0,
   "stock_kernel_version": "6.6.118-android15-8-g0908354dac1b-ab16143355-4k"
 }

@@ -48,12 +48,19 @@ def main() -> int:
     if vbmeta[:4] != b"AVB0":
         raise SystemExit(f"footer 指向的位置不是 vbmeta（{vbmeta[:4]!r}）")
 
+    # 页对齐位置到 original_image_size 之间还夹着原厂自己的 AVB 元数据
+    # （实测这段 16KB 里有第二个 AVB0 结构）。它不是 vbmeta，但属于原厂镜像，
+    # 打包时整段原样搬过去，比清零更接近原厂 —— 清零等于凭空少了 16KB 内容。
+    aligned = (PAGE + kernel_size + PAGE - 1) // PAGE * PAGE
+    tail = data[aligned:orig] if orig > aligned else b""
+
+
     m = re.search(rb"Linux version ([^\x00]{0,120})", data[PAGE:PAGE + kernel_size])
     version = m.group(1).decode("utf-8", "replace") if m else ""
 
     os.makedirs(args.out_dir, exist_ok=True)
     with open(os.path.join(args.out_dir, "boot-template.bin"), "wb") as fh:
-        fh.write(data[:PAGE] + vbmeta)
+        fh.write(data[:PAGE] + vbmeta + tail)
 
     meta = {
         "source": os.path.basename(os.path.dirname(os.path.abspath(args.stock_boot))),
@@ -62,8 +69,11 @@ def main() -> int:
         "header_version": header_version,
         "header_bytes": PAGE,
         "vbmeta_size": vbs,
-        "template_bytes": PAGE + vbs,
+        "tail_size": len(tail),
+        "template_bytes": PAGE + vbs + len(tail),
         "stock_kernel_size": kernel_size,
+        "stock_aligned": aligned,
+        "stock_original_image_size": orig,
         "stock_ramdisk_size": ramdisk_size,
         "stock_kernel_version": version.split(" ")[0] if version else "",
     }
@@ -73,7 +83,8 @@ def main() -> int:
         fh.write("\n")
 
     print(json.dumps(meta, indent=2, ensure_ascii=False))
-    print(f"\n    已写入 {args.out_dir}/boot-template.bin（{PAGE + vbs} 字节）")
+    print(f"\n    已写入 {args.out_dir}/boot-template.bin（{meta['template_bytes']} 字节："
+          f"header {PAGE} + vbmeta {vbs} + 原厂尾部 {len(tail)}）")
     return 0
 
 

@@ -15,14 +15,15 @@
 旧版的产物体检其实全通过了 —— 配置与出厂逐项一致（6184 项、ABI 敏感项 0 差异）、
 arm64 头正常、KernelSU/SUSFS 都编进去了。问题不在内核，在**打包**。
 
-这台机器的 boot 分区不是"裸内核"，而是三块拼起来的一个整体：
+这台机器的 boot 分区不是"裸内核"，而是几块拼起来的一个整体：
 
 ```
-偏移 0              : boot header v4（header_size=1584, ramdisk_size=0）
-偏移 4096           : 内核 Image
-round_up(内核末尾)   : vbmeta blob（2368 字节，AVB0 开头）
-文件末尾 -64         : AVB footer（AVBf），写着 original_image_size / vbmeta_offset / vbmeta_size
-文件总长            : 100663296 字节（= 96MB 分区大小）
+偏移 0                  : boot header v4（header_size=1584, ramdisk_size=0）
+偏移 4096               : 内核 Image
+round_up(内核末尾)       : 原厂 AVB 尾部 16384 字节（里面还有第二个 AVB0 结构）
+original_image_size 处  : vbmeta blob（2368 字节，AVB0 开头，footer 指向它）
+文件末尾 -64            : AVB footer（AVBf），写着 original_image_size / vbmeta_offset / vbmeta_size
+文件总长                : 100663296 字节（= 96MB 分区大小）
 ```
 
 实测原厂 boot.img（OS 4.0.8.0）：
@@ -33,23 +34,38 @@ round_up(内核末尾)   : vbmeta blob（2368 字节，AVB0 开头）
 | header_version / header_size | 4 / 1584 |
 | kernel_size | 36801024 |
 | ramdisk_size | **0**（ramdisk 在 `init_boot` 里） |
+| 页对齐位置 | 36806656（内核止于 36805120，补 1536 字节对齐） |
+| 页对齐处的 16KB 尾部 | 36806656 ~ 36823040，非零内容 4472 字节，开头是第二个 `AVB0` |
 | vbmeta_offset / vbmeta_size | 36823040 / 2368 |
 | 内核版本 | `6.6.118-android15-8-g0908354dac1b-ab16143355-4k` |
 
-**换内核之后，vbmeta blob 必须整体挪到新的页对齐位置，footer 的三个字段必须重写，
-输出长度必须还是 100663296。** 少做一步，footer 就指向被新内核覆盖的旧偏移，
-AVB 校验必然失败 —— 表现就是**卡在 logo、不 panic、不重启**。
+**换内核之后，这些部分必须整体搬到新位置、footer 三个字段必须重写，输出长度必须还是 100663296。**
+少做一步，footer 就指向被新内核覆盖的旧偏移，表现为**卡在 logo、不 panic、不重启**。
+
+`project/pack.py` 从 v2 起会**原样保留页对齐处那 16KB 原厂 AVB 尾部**（早期版本把它清零了）。
+这条改动的正确性可以硬验证 —— 把原厂内核喂给它，输出与原厂 `boot.img` **逐字节一致**：
+
+```bash
+python - <<'PY'
+import struct
+d = open("原厂boot.img","rb").read()
+ks = struct.unpack_from("<I", d, 8)[0]
+open("stock-Image","wb").write(d[4096:4096+ks])
+PY
+python project/pack.py pack stock-Image repack.img
+cmp repack.img 原厂boot.img && echo "逐字节一致"
+```
 
 旧版两个产物都踩了：
 
 | 旧产物 | 问题 |
 | --- | --- |
-| AnyKernel3 zip | AK3 只写内核，完全不处理 vbmeta 与 AVB footer |
+| AnyKernel3 zip（只换内核那种） | 只写内核，完全不处理 vbmeta 与 AVB footer |
 | `boot-k90-custom.img`（37MB） | 只改了 `kernel_size`，没有 vbmeta、没有 footer |
 
 再加上当时设备还是 **LKM 模式**（`init_boot` 里有 KernelSU 塞进去的 `kernelsu.ko`），
 内核换成 GKI 内置 KSU 之后那份 `.ko` 的符号 CRC 对不上，首阶段 init 等不到模块，
-同样卡住不动。**这两个坑必须一起解决**。
+同样卡住不动。**测我们的内核时 `init_boot` 必须是原厂的。**
 
 ---
 
@@ -58,7 +74,7 @@ AVB 校验必然失败 —— 表现就是**卡在 logo、不 panic、不重启*
 ```
 project/prepare.sh   repo sync ACK → 锁到 6.6.118 的发布 tag → 集成 root/SUSFS/附加功能 → 写配置
 project/build.sh     make ARCH=arm64 LLVM=1 O=out Image → 逐项回读校验 → 产物自检
-project/pack.py      把 Image 打进「原厂布局」的 boot.img（重定位 vbmeta + 重写 AVB footer）
+project/pack.py      把 Image 打进「原厂布局」的 boot.img（重定位 vbmeta/尾部 + 重写 AVB footer）
 project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一项不过就不发布
 ```
 
@@ -85,6 +101,7 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 | 指定某一个管理器 | 同上的 `<管理器>` 版本 |
 | `all` | 5 套（bakasu / sukisu-ultra / kernelsu / kernelsu-next / kowsu），一个 job 一个，并行 |
 | `none` | `boot-warsaw-none-6.6.118.img` + `ak3-warsaw-none-6.6.118.zip`，纯内核（排查用） |
+| `diag` | 4 个诊断包，一次跑完做二分：`vanilla`（纯原厂配置重建）/ `vanilla-nosig`（再关掉模块签名保护）/ `bakasu-nosusfs` / `bakasu`；都不带附加功能 |
 
 每套都给两种刷法，内容完全一致：
 
@@ -250,10 +267,25 @@ fastboot boot boot-warsaw-sukisu-6.6.118.img   # 只在内存里起一次，重�
 
 | 症状 | 先看这里 |
 | --- | --- |
-| 卡 logo 不动 | `init_boot` 是否还是 LKM 版（`bash tools/check-device.sh`，只读） |
-| 卡 logo，但 init_boot 已回原厂 | 换成 `root=none` 跑一份：还卡就是打包/刷写问题，不是 root 的问题 |
+| 卡 logo 不动 | `init_boot` 是否还是 LKM 版（`bash tools/check-device.sh`，只读）——**测我们的内核时必须刷回原厂 `init_boot`** |
+| 卡 logo，但 init_boot 已回原厂 | 跑一次 `root=diag`，按下面的顺序二分 |
 | 能进系统但相机/WiFi 没了 | `adb shell dmesg \| grep -iE "disagrees about version\|version magic"` → 符号 CRC 不匹配，源码版本没锁对 |
 | 想拿上一轮失败的内核日志 | `bash tools/get-last-log.sh`（时序：刷→卡住→重启进原系统→立刻跑） |
+
+### `root=diag` 二分法
+
+一次运行出 4 个包，按顺序刷，**每刷一个之前先确认 `init_boot` 是原厂的**：
+
+| 顺序 | 包 | 起得来说明什么 | 起不来说明什么 |
+| --- | --- | --- | --- |
+| ① | `vanilla` | 打包 + 基础编译没问题 | 问题在打包或工具链/配置，跟 root、SUSFS 无关 |
+| ② | `vanilla-nosig` | **`CONFIG_MODULE_SIG_PROTECT` 挡了厂商模块**（我们的签名密钥和厂商那把不同） | 不是签名保护的问题 |
+| ③ | `bakasu-nosusfs` | KernelSU 集成没问题 | 问题在 KSU 集成（BakaSU 的 preinit / hook） |
+| ④ | `bakasu` | 完整可用 | 问题在 SUSFS 那批补丁（`fs/exec.c` 用了 fuzz 打的） |
+
+①② 之间只差一个配置项，③④ 之间只差 SUSFS —— 一次 CI 就能把三层各自判定，
+不用「改一点、跑 20 分钟、再猜」。
+
 
 `tools/check-device.sh` 会输出页大小、KMI、`init_boot` 是否残留 LKM、KSU 状态，全是只读操作。
 
@@ -285,8 +317,8 @@ configs/
 patches/
   susfs-for-sukisu-v4.3.0.patch   susfs4ksu → SukiSU 的胶水移植（来自已验证案例）
 firmware/
-  boot-template.bin           原厂 header(4096) + vbmeta(2368)，6.4KB
-  boot-template.json          分区大小 / 页大小 / vbmeta 尺寸
+  boot-template.bin           原厂 header + vbmeta + AVB 尾部，22KB
+  boot-template.json          分区大小 / 页大小 / vbmeta 尺寸 / 尾部尺寸
 tools/
   check-device.sh             连手机只读自检
   get-last-log.sh             抓上一次开机的 pstore

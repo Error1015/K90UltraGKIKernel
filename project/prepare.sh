@@ -399,6 +399,24 @@ if is_true "$DROIDSPACES"; then info "--- DroidSpaces ---"; apply_fragment "$WS/
 if is_true "$BPF";         then info "--- BTF/eBPF ---";    apply_fragment "$WS/configs/features/bpf.fragment"; fi
 
 # ---------------------------------------------------------------------------
+# CONFIG_MODULE_SIG_PROTECT：Android GKI 的模块保护。
+#
+# 它允许「用本次构建的签名密钥签出来的模块」随便用符号；其它模块（含厂商签名的
+# vendor_dlkm / vendor_boot 模块）只有在**不碰** android/abi_gki_protected_exports
+# 里的符号时才放行。
+#
+# 我们的签名密钥是构建时现生成的（certs/signing_key.pem 不存在就会自动造一把），
+# 和厂商那把毫无关系。一旦厂商模块用到受保护导出，内核会拒绝加载 ——
+# 显示 / 存储这类早期模块一挂，表现就是内核起来了、画面停在开机 logo。
+#
+# 默认保持原厂的 y；诊断分支可以关掉（关掉后签名仍然校验，只是不强制）。
+# ---------------------------------------------------------------------------
+if ! is_true "${SIGPROTECT:-true}"; then
+  warn "CONFIG_MODULE_SIG_PROTECT=n（诊断模式：放行非本次密钥签名的厂商模块）"
+  set_cfg MODULE_SIG_PROTECT n
+fi
+
+# ---------------------------------------------------------------------------
 # BBG 的 Makefile 在编译期硬校验：CONFIG_BBG=y 时 CONFIG_LSM 里必须有 baseband_guard，
 # 否则直接 $(error) "Please follow Baseband-guard's README.md" 然后 Stop。
 # 而厂配 .config 里 CONFIG_LSM 是显式字符串（不是 Kconfig 的 default），

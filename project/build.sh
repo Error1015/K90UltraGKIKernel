@@ -110,7 +110,11 @@ require_cfg IKCONFIG y
 
 # 这几项是 ABI 敏感项，与出厂不一致时只告警不中断（KMI 判定看的是符号 CRC）
 require_cfg CFI_CLANG y
-require_cfg MODULE_SIG_PROTECT y
+if is_true "${SIGPROTECT:-true}"; then
+  require_cfg MODULE_SIG_PROTECT y
+else
+  require_cfg MODULE_SIG_PROTECT n
+fi
 require_cfg KALLSYMS_ALL y
 
 LOCALVER="$(sed -n 's/^CONFIG_LOCALVERSION="\(.*\)"$/\1/p' "$OUT/.config")"
