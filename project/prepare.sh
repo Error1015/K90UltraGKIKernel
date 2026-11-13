@@ -114,7 +114,7 @@ if [ "$ROOT_IMPL" != "none" ]; then
       ROOT_BRANCH="main";        ROOT_MANAGER_NAME="BakaSU Manager" ;;
     sukisu-ultra)
       ROOT_REPO="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git";  ROOT_DIR="SukiSU-Ultra"
-      ROOT_BRANCH="main";        ROOT_MANAGER_NAME="SukiSU-Ultra Manager" ;;
+      ROOT_BRANCH="v4.3.0";      ROOT_MANAGER_NAME="SukiSU-Ultra Manager" ;;
     kernelsu)
       ROOT_REPO="https://github.com/tiann/KernelSU.git";             ROOT_DIR="KernelSU"
       ROOT_BRANCH="main";        ROOT_MANAGER_NAME="KernelSU Manager" ;;
@@ -238,7 +238,7 @@ if is_true "$SUSFS"; then
   python3 "$WS/project/susfs_66_compat.py" "$COMMON" "$GOT_SUB"
 
   # root 侧的 SUSFS 胶水：先探测仓库自带的 Kconfig 有没有 KSU_SUSFS
-  if grep -qE '^[[:space:]]*config KSU_SUSFS$' "$ROOT_SRC/kernel/Kconfig" 2>/dev/null; then
+  if grep -rqE '^[[:space:]]*config KSU_SUSFS[[:space:]]*$' "$ROOT_SRC/kernel" 2>/dev/null; then
     info "$ROOT_DIR 自带 SUSFS 胶水（Kconfig 有 KSU_SUSFS），无需额外补丁"
   else
     case "$ROOT_IMPL" in
