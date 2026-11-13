@@ -20,6 +20,13 @@ DEVICE_ALT="${DEVICE_ALT:-}"
 [ -n "$OUT_ZIP" ]  || die "用法: project/ak3.sh <boot.img> <输出.zip> [kernel.string] [device]"
 [ -f "$BOOT_IMG" ] || die "找不到 $BOOT_IMG"
 
+# 输出路径立刻转成绝对路径。
+# 打包时要在临时目录里 cd（zip 必须从内容根目录压），相对路径一 cd 就失效，
+# 表现为 zip 报 "zip I/O error: No such file or directory"。
+mkdir -p "$(dirname "$OUT_ZIP")"
+OUT_ZIP="$(cd "$(dirname "$OUT_ZIP")" && pwd)/$(basename "$OUT_ZIP")"
+BOOT_IMG="$(cd "$(dirname "$BOOT_IMG")" && pwd)/$(basename "$BOOT_IMG")"
+
 IMGSZ=$(stat -c %s "$BOOT_IMG")
 
 # 整分区镜像必须和 boot 分区等长，否则设备上 dd 会留下旧尾部
@@ -105,6 +112,7 @@ PY
   fi
 }
 pack_zip "$BUILD" "$OUT_ZIP" || die "打包 zip 失败"
+[ -s "$OUT_ZIP" ] || die "打包后 zip 不存在或为空：$OUT_ZIP"
 
 ZIPSZ=$(stat -c %s "$OUT_ZIP")
 info "生成 : $OUT_ZIP（$ZIPSZ 字节）"
