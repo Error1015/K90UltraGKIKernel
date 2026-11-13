@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 刷机前 / 刷机后自检：只读，不改手机任何东西
 #
-#   bash scripts/check-device.sh
+#   bash tools/check-device.sh
 #
 # 主要回答三个问题：
 #   1. 现在跑的是不是内置 KSU 的内核（GKI 模式）？
@@ -13,7 +13,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-. "$SCRIPT_DIR/lib.sh"
+. "$SCRIPT_DIR/../project/lib.sh"
 set +e   # lib.sh 开了 errexit；本脚本要容忍单条 adb 命令失败
 
 command -v adb >/dev/null 2>&1 || die "找不到 adb，请先把 platform-tools 加进 PATH"

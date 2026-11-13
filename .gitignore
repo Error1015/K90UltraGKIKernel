@@ -1,10 +1,11 @@
 # 构建产物
 out/
+dist/
 kernel/
+SukiSU-Ultra/
 susfs4ksu/
-kernel_patches/
-AnyKernel3/
-Droidspaces-OSS/
+patch-rejects/
+*.log
 *.zip
 *.rej
 *.orig
@@ -13,5 +14,10 @@ Droidspaces-OSS/
 .env
 tmp/
 
-# 本地生成的 flash 镜像
+# 设备导出的镜像 / 日志
 *.img
+last-boot-log-*.txt
+
+# Python 缓存
+__pycache__/
+*.pyc

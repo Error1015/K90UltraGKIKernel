@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 把上一次开机（尤其是"刷了内核卡 logo 那次"）的内核日志抓下来
 #
-#   bash scripts/get-last-log.sh
+#   bash tools/get-last-log.sh
 #
 # 重要：ramoops 只保留**上一次**开机的 console。所以正确用法是
 #   刷内核 -> 卡住 -> 长按电源重启进原系统 -> 立刻跑本脚本
@@ -13,7 +13,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/lib.sh"
+. "$SCRIPT_DIR/../project/lib.sh"
 set +e
 
 command -v adb >/dev/null 2>&1 || die "找不到 adb，请先把 platform-tools 加进 PATH"

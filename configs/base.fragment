@@ -1,0 +1,19 @@
+# 所有构建都会叠加的配置项（在【原厂 .config】之上）
+#
+# 这里只放"必须改、且改了也不影响 ABI"的项。
+# 原厂配置见 configs/warsaw_defconfig（从原厂 boot.img 内嵌 IKCONFIG 提取）。
+# 不在这里加任何功能开关 —— builtin/module 的划分一旦与出厂不同，
+# vendor_dlkm 里的模块就会 duplicate / 找不到，表现为内核活着但 Android 起不来。
+
+# 关掉导出符号裁剪。
+# GKI 的默认做法是按 android/abi_gki_aarch64 白名单裁剪，白名单文件
+# （CONFIG_UNUSED_KSYMS_WHITELIST="abi_symbollist.raw"）是 Kleaf 在构建时生成的；
+# 直接用 make 构建时没有这个文件，继续开着会导致导出符号被裁到只剩内核内部用到的那些，
+# 厂商模块随即 unknown symbol。全量导出只是让 Image 大 1~2MB。
+CONFIG_TRIM_UNUSED_KSYMS=n
+
+# SUSFS / metamodule 需要完整 kallsyms（原厂已是 y，这里显式声明防止被覆盖）
+CONFIG_KALLSYMS_ALL=y
+
+# 版本串里不要再自动追加 -g<sha> / 脏标记（只影响字符串，不影响 ABI）
+CONFIG_LOCALVERSION_AUTO=n

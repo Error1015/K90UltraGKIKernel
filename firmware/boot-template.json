@@ -1,0 +1,11 @@
+{
+  "source": "warsaw-ota_full-OS4.0.8.0.XHPCNXM-user-17.0-96194cf12c",
+  "partition_size": 100663296,
+  "page_size": 4096,
+  "header_version": 4,
+  "header_bytes": 4096,
+  "vbmeta_size": 2368,
+  "template_bytes": 6464,
+  "stock_kernel_size": 36801024,
+  "stock_kernel_version": "6.6.118-android15-8-g0908354dac1b-ab16143355-4k"
+}

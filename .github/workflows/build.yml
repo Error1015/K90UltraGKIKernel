@@ -1,461 +1,177 @@
-name: Build GKI Kernel
+name: Build K90 Ultra GKI
 
-# 为 Redmi K90 Ultra (warsaw / SM8750 / 6.6) 构建集成 KernelSU 系 root 与 SUSFS 的 GKI 内核
-# 手动触发：Actions → Build GKI Kernel → Run workflow
+# ---------------------------------------------------------------------------
+# 一次运行出两份包（矩阵并行）：
+#   vanilla —— 纯内核，不带 root。用来证明"内核本身能在这台机器上启动"。
+#   sukisu  —— 内置 SukiSU-Ultra（+ 可选 SUSFS）。
 #
-# root_manager 默认为 all：一次运行把所有 root 管理器（kernelsu-next / kernelsu / bakasu /
-# sukisu-ultra / kowsu）各出一份 AnyKernel3 刷机包，并行构建，互不影响。
-
+# 两份都是 **完整 boot 分区镜像**（96MB，含 vbmeta 与 AVB footer，ramdisk_size=0），
+# 用 `fastboot flash boot` 刷入。不用 AnyKernel3 —— 它只写内核，
+# 会把 footer 指向的 vbmeta 覆盖掉，结果就是卡 logo。
+# ---------------------------------------------------------------------------
 on:
   workflow_dispatch:
     inputs:
-      preset:
-        description: "构建预设：full = 按下面的开关全量构建（默认）；safe = 只留 root + SUSFS；vanilla = 不集成任何东西，只验证基础内核"
-        type: choice
+      kernel_release:
+        description: '手机 uname -r 的版本（如 6.6.118），会锁到同版本的 ACK tag'
         required: true
-        default: full
-        options:
-          - full
-          - safe
-          - vanilla
-      variants:
-        description: "额外再并行构建的预设（逗号分隔，例如 safe,vanilla）。会和上面的 preset 合并，不会替换它；留空表示只构建 preset"
-        type: string
-        default: ""
-      root_manager:
-        description: "Root 管理器：all = 全部（每个管理器各出一个包）；也可以只选一个"
+        default: '6.6.118'
+      kernel_tag:
+        description: '直接指定 ACK tag（填了就忽略 kernel_release）'
+        required: false
+        default: ''
+      root:
+        description: 'root 实现'
         type: choice
-        required: true
-        default: all
-        options:
-          - all
-          - kernelsu-next
-          - kernelsu
-          - bakasu
-          - sukisu-ultra
-          - kowsu
-          - none
-      root_ref:
-        description: "Root 仓库分支 / tag / commit（留空 = 默认分支最新；选 all 时对所有管理器生效）"
-        type: string
-        default: ""
-
-      lto:
-        description: "LTO 模式。官方 GKI release 用 thin（最接近出厂）；none 编得更快但内核二进制与官方不同"
-        type: choice
-        required: true
-        default: thin
-        options:
-          - thin
-          - full
-          - none
-
-      config_mode:
-        description: "配置来源：overlay = 在官方 gki_defconfig 上叠加本仓库的开关；device = 直接用 config/device/gki_defconfig（手机出厂配置）；pristine = 一个字都不改，纯 ACK 参考内核（配合 preset=vanilla 排查）"
-        type: choice
-        required: true
-        default: overlay
-        options:
-          - overlay
-          - device
-          - pristine
-
+        options: [sukisu-ultra, none]
+        default: sukisu-ultra
       susfs:
-        description: "SUSFS（root 隐藏，建议开启）。KowSU 与 SUSFS 不兼容，选 all 时 kowsu 那份会自动关闭 SUSFS"
+        description: '集成 SUSFS（需要 root 不为 none）'
         type: boolean
         default: true
-      nomount:
-        description: "NoMount（VFS 层无挂载点伪装）"
-        type: boolean
-        default: false
-      bbg:
-        description: "Baseband Guard（基带分区保护）"
-        type: boolean
-        default: false
-      droidspaces:
-        description: "DroidSpaces-OSS（容器运行时）"
-        type: boolean
-        default: false
-      networking:
-        description: "Networking（BBRv3 / WireGuard / IPSet / CIFS）"
-        type: boolean
-        default: false
-      ntsync:
-        description: "NTSync（Proton / Wine 同步原语）"
-        type: boolean
-        default: false
-      ptrace_fix:
-        description: "Ptrace Leak Fix（6.6 已包含在 SUSFS 补丁内）"
-        type: boolean
-        default: false
-      unicode_fix:
-        description: "Unicode Fix（修复 /proc 名称绕过）"
-        type: boolean
-        default: false
-      bpf:
-        description: "BTF / eBPF / FUSE-BPF"
-        type: boolean
-        default: false
-
-      page_size:
-        description: "内核页大小"
-        type: choice
+      localversion:
+        description: '版本串后缀（保留 -android15-8 前缀，别破坏 KMI 标识）'
         required: true
-        default: 4k
-        options:
-          - 4k
-          - 16k
-
-      manifest_branch:
-        description: "GKI 源码清单分支（默认跟踪 6.6 LTS；机型出厂为 6.6.118，与该线最新一致）"
-        type: string
-        default: common-android15-6.6-lts
-      kernel_commit:
-        description: "原厂内核提交（uname -r 里的 -g 后面的 hash，如 c4127a25dcf3）：最精确的锁定方式，命中 ACK tag 时自动用 tag，否则把源码直接钉到这个提交"
-        type: string
-        default: ""
-
-      kernel_release:
-        description: "目标内核版本（推荐填手机的版本，如 6.6.118）：自动把源码锁定到同版本的 ACK 发布 tag，避免用比手机新几十个 stable 的源码"
-        type: string
-        default: ""
-
-      kernel_tag:
-        description: "直接指定 ACK 发布 tag（如 android15-6.6-2025-12_r3）。填了就忽略 kernel_release；两者都留空 = 用分支最新"
-        type: string
-        default: ""
-      stock_kernel_version:
-        description: "版本对齐（例如 6.6.57）：把内核版本改成出厂版本，仅在 vendor 模块 vermagic 不匹配时使用"
-        type: string
-        default: ""
-      susfs_branch:
-        description: "susfs4ksu 分支"
-        type: string
-        default: gki-android15-6.6
-      brand:
-        description: "包名前缀"
-        type: string
-        default: K90Ultra
-
+        default: '-android15-8-warsaw-4k'
       release:
-        description: "发布方式：release = 正式 Release；prerelease = 预发布（GitHub 上标记 Pre-release，不会出现在 /releases/latest）；none = 不发布，只留 Artifacts"
+        description: '发布方式'
         type: choice
-        required: true
+        options: [release, prerelease, none]
         default: release
-        options:
-          - release
-          - prerelease
-          - none
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-gki-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # 把 "preset / variants / root_manager" 解析成一张构建矩阵：
-  #   预设 × root 管理器 → 每个组合一个并行 job、一份 AK3 包
-  # （选 all 时默认就是 full × 5 个管理器，一次运行出全部刷机包）
-  resolve:
-    name: 解析构建矩阵
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.parse.outputs.matrix }}
-      count: ${{ steps.parse.outputs.count }}
-    steps:
-      - name: 解析 preset / variants / root_manager
-        id: parse
-        shell: bash
-        env:
-          PRESET: ${{ inputs.preset }}
-          VARIANTS: ${{ inputs.variants }}
-          ROOT_MANAGER: ${{ inputs.root_manager }}
-          SUSFS: ${{ inputs.susfs }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os, sys
-
-          # 所有受支持的 root 管理器（顺序即矩阵顺序）
-          ALL_ROOTS = ["kernelsu-next", "kernelsu", "bakasu", "sukisu-ultra", "kowsu"]
-          ALLOWED_PRESETS = {"safe", "full", "vanilla"}
-          ALLOWED_ROOTS = set(ALL_ROOTS) | {"none"}
-
-          def truthy(value):
-              return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-          # --- 预设：preset 永远参与，variants 只是"额外再加几个"（合并，不是替换） ---
-          # 之前这里是 variants 优先、非空就丢弃 preset，结果表单里残留一句
-          # "vanilla,safe" 就会让你明明选了 full 却一个 full 包都不出。
-          presets = []
-
-          def add_preset(raw, where):
-              name = (raw or "").strip().lower()
-              if not name:
-                  return
-              if name not in ALLOWED_PRESETS:
-                  raise SystemExit(f"未知预设: {name}（来自 {where}，可选 safe / full / vanilla）")
-              if name not in presets:
-                  presets.append(name)
-
-          add_preset(os.environ.get("PRESET"), "preset")
-          for part in (os.environ.get("VARIANTS") or "").split(","):
-              add_preset(part, "variants")
-
-          if not presets:
-              raise SystemExit("没有解析出任何预设（preset 与 variants 都是空的）")
-
-          variants_raw = (os.environ.get("VARIANTS") or "").strip()
-          extra = [p for p in presets if p != (os.environ.get("PRESET") or "").strip().lower()]
-          if variants_raw and extra:
-              print(f"variants 与 preset 合并后共 {len(presets)} 个预设: {', '.join(presets)}",
-                    file=sys.stderr)
-
-          # --- root 管理器（all = 全部） ---
-          raw_root = (os.environ.get("ROOT_MANAGER") or "").strip().lower() or "all"
-          if raw_root == "all":
-              roots = list(ALL_ROOTS)
-          elif raw_root in ALLOWED_ROOTS:
-              roots = [raw_root]
-          else:
-              raise SystemExit(f"未知 Root 管理器: {raw_root}")
-
-          susfs_requested = truthy(os.environ.get("SUSFS"))
-
-          entries = []
-          seen = set()
-          notes = []
-          for preset in presets:
-              for root in roots:
-                  # vanilla 不集成任何 root，多个 root 只会产出完全相同的包，收敛成一份
-                  actual_root = "none" if preset == "vanilla" else root
-                  susfs = susfs_requested and actual_root != "none" and preset != "vanilla"
-                  if susfs and actual_root == "kowsu":
-                      susfs = False
-                      notes.append(f"{preset} / kowsu：KowSU 与 SUSFS 不兼容，该包自动关闭 SUSFS")
-                  key = (preset, actual_root, susfs)
-                  if key in seen:
-                      continue
-                  seen.add(key)
-                  entries.append({"preset": preset, "root": actual_root, "susfs": susfs})
-
-          for note in notes:
-              print(f"[!] {note}", file=sys.stderr)
-          print(f"将构建 {len(entries)} 个包: " + ", ".join(f"{e['preset']}/{e['root']}" for e in entries),
-                file=sys.stderr)
-
-          # 写运行摘要，方便一眼看清这一轮到底会出哪些包
-          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary_path:
-              with open(summary_path, "a", encoding="utf-8") as fh:
-                  fh.write(f"### 构建矩阵（共 {len(entries)} 个包）\n\n")
-                  fh.write("| # | 预设 | Root 管理器 | SUSFS |\n| --- | --- | --- | --- |\n")
-                  for idx, entry in enumerate(entries, start=1):
-                      fh.write(f"| {idx} | `{entry['preset']}` | `{entry['root']}` | "
-                               f"{'✅' if entry['susfs'] else '—'} |\n")
-                  fh.write("\n")
-                  for note in notes:
-                      fh.write(f"> [!] {note}\n")
-                  if notes:
-                      fh.write("\n")
-
-          print(f"matrix={json.dumps(entries, separators=(',', ':'))}")
-          print(f"count={len(entries)}")
-          PY
-          cat "$GITHUB_OUTPUT"
-
   build:
-    needs: resolve
-    name: ${{ matrix.preset }} / ${{ matrix.root }} / ${{ inputs.page_size }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 150
+    if: matrix.name == 'vanilla' || inputs.root != 'none'
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+        include:
+          - name: vanilla
+            root: none
+            susfs: 'false'
+          - name: sukisu
+            root: ${{ inputs.root }}
+            susfs: ${{ inputs.susfs }}
 
     env:
-      PRESET: ${{ matrix.preset }}
-      ROOT_MANAGER: ${{ matrix.root }}
-      ROOT_REF: ${{ inputs.root_ref }}
-      SUSFS: ${{ matrix.susfs }}
-      NOMOUNT: ${{ inputs.nomount }}
-      BBG: ${{ inputs.bbg }}
-      DROIDSPACES: ${{ inputs.droidspaces }}
-      NETWORKING: ${{ inputs.networking }}
-      NTSYNC: ${{ inputs.ntsync }}
-      PTRACE_FIX: ${{ inputs.ptrace_fix }}
-      UNICODE_FIX: ${{ inputs.unicode_fix }}
-      BPF: ${{ inputs.bpf }}
-      CONFIG_MODE: ${{ inputs.config_mode }}
-      LTO: ${{ inputs.lto }}
-      PAGE_SIZE: ${{ inputs.page_size }}
-      MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
-      KERNEL_TAG: ${{ inputs.kernel_tag }}
+      ANDROID_BRANCH: android15-6.6
       KERNEL_RELEASE: ${{ inputs.kernel_release }}
-      KERNEL_COMMIT: ${{ inputs.kernel_commit }}
-      STOCK_KERNEL_VERSION: ${{ inputs.stock_kernel_version }}
-      SUSFS_BRANCH: ${{ inputs.susfs_branch }}
-      BRAND: ${{ inputs.brand }}
-      ALLOW_PATCH_FUZZ: "true"
+      KERNEL_TAG: ${{ inputs.kernel_tag }}
+      ROOT_IMPL: ${{ matrix.root }}
+      SUSFS: ${{ matrix.susfs }}
+      LOCALVERSION: ${{ inputs.localversion }}
+      VARIANT: ${{ matrix.name }}
 
     steps:
-      - name: 检出仓库
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 释放磁盘空间
-        # GKI 全量 repo sync + Kleaf 构建需要 ~60GB 空闲空间
+      - name: 清理磁盘
         run: |
           set -euo pipefail
-          df -h /
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/share/boost \
-            /usr/local/lib/node_modules \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/share/swift 2>/dev/null || true
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
           sudo apt-get clean
-          df -h /
+          df -h / | tail -1
 
-      - name: 增加 Swap（LTO / 并行链接需要）
+      - name: 安装依赖
         run: |
           set -euo pipefail
-          if [ ! -f /swapfile ]; then
-            sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-            sudo chmod 600 /swapfile
-            sudo mkswap /swapfile
-            sudo swapon /swapfile
-          fi
-          free -h
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            python3 rsync cpio kmod zip unzip dwarves git curl ca-certificates
+          pahole --version || true
 
-      - name: 安装构建依赖
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc bison flex zip unzip python3 git curl ca-certificates
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global --add safe.directory '*'
-
-      - name: 准备源码与补丁
-        run: bash scripts/prepare.sh
+      - name: 准备源码 / root / 配置
+        shell: bash
+        run: bash project/prepare.sh 2>&1 | tee prepare.log
 
       - name: 编译内核
-        run: bash scripts/build.sh
+        shell: bash
+        run: bash project/build.sh 2>&1 | tee build-step.log
 
-      - name: 打包 AnyKernel3
-        run: bash scripts/package.sh
+      - name: 打包 boot.img（AVB 感知）
+        run: |
+          set -euo pipefail
+          NAME="boot-warsaw-${{ matrix.name }}-${KERNEL_RELEASE}"
+          python3 project/pack.py pack dist/Image "dist/${NAME}.img"
+          echo "BOOT_NAME=${NAME}" >> "$GITHUB_ENV"
 
-      - name: 上传刷机包
+      - name: 产物验收
+        run: |
+          set -euo pipefail
+          SUB="${KERNEL_RELEASE##*.}"
+          python3 project/verify.py \
+            --boot "dist/${BOOT_NAME}.img" \
+            --image dist/Image \
+            --root "${ROOT_IMPL}" \
+            --susfs "${SUSFS}" \
+            --sublevel "$SUB" \
+            --out "dist/build-info-${{ matrix.name }}.md"
+
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_PATH }}
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: 上传内核配置与构建说明
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-config-and-info-${{ matrix.preset }}-${{ matrix.root }}
+          name: ${{ env.BOOT_NAME }}
           path: |
-            out/kernel.config
-            out/build-info.md
-          if-no-files-found: warn
+            dist/*.img
+            dist/Image
+            dist/build-info-*.md
+            dist/kernel-version.txt
+            prepare.log
+            build-step.log
+          if-no-files-found: error
+          compression-level: 1
 
-      - name: 上传补丁 rejects（如果有）
-        if: always()
+      - name: 收集补丁 reject（失败时）
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: patch-rejects-${{ matrix.preset }}-${{ matrix.root }}
+          name: rejects-${{ matrix.name }}
           path: patch-rejects/
           if-no-files-found: ignore
-
-      - name: 构建摘要
-        if: always()
-        run: |
-          {
-            echo "### 构建结果：${{ matrix.preset }} / ${{ matrix.root }}"
-            echo
-            echo "- Root：\`${{ matrix.root }}\`，SUSFS：\`${{ matrix.susfs }}\`，页大小：\`${{ inputs.page_size }}\`"
-            echo "- 源码：\`${{ inputs.manifest_branch }}\`"
-            echo "- 产物：\`${{ env.ZIP_NAME }}\`"
-            [ -f out/build-info.md ] && cat out/build-info.md
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 发布 Release
         if: ${{ inputs.release != 'none' && success() }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.ZIP_NAME }}
-          body_path: out/build-info.md
-          files: ${{ env.ZIP_PATH }}
-          # release / prerelease 的区别就是 GitHub 的 Pre-release 标记
+          tag_name: warsaw-${{ matrix.name }}-${{ inputs.kernel_release }}-${{ github.run_number }}
+          name: K90 Ultra ${{ matrix.name }} (${{ inputs.kernel_release }})
+          body_path: dist/build-info-${{ matrix.name }}.md
+          files: |
+            dist/*.img
+            dist/Image
+            dist/build-info-*.md
           prerelease: ${{ inputs.release == 'prerelease' }}
-          # 一次运行会出多个包（每个管理器一个），不抢 "Latest" 标签，避免每次随机落到某个管理器上
           make_latest: false
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
 
-  # 所有并行 job 跑完后，在运行页面上给一张"这一轮都出了什么"的总表
-  report:
-    name: 汇总
-    needs: [resolve, build]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: 汇总本轮产物
-        env:
-          MATRIX: ${{ needs.resolve.outputs.matrix }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          PAGE_SIZE: ${{ inputs.page_size }}
-          SUSFS_BRANCH: ${{ inputs.susfs_branch }}
-          MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
-          RELEASE_MODE: ${{ inputs.release }}
+      - name: 运行摘要
+        if: always()
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json, os
-
-          entries = json.loads(os.environ.get("MATRIX") or "[]")
-          mode = os.environ.get("RELEASE_MODE", "")
-          mode_label = {
-              "release": "正式 Release",
-              "prerelease": "预发布（Pre-release）",
-              "none": "不发布（只留 Artifacts）",
-          }.get(mode, mode or "未知")
-
-          print("### 本轮构建汇总\n")
-          print(f"- 矩阵任务数：`{len(entries)}`")
-          print(f"- 矩阵整体结果：`{os.environ.get('BUILD_RESULT', 'unknown')}`")
-          print(f"- 发布方式：{mode_label}")
-          print(f"- 页大小：`{os.environ.get('PAGE_SIZE', '')}`，源码：`{os.environ.get('MANIFEST_BRANCH', '')}`，"
-                f"SUSFS 分支：`{os.environ.get('SUSFS_BRANCH', '')}`")
-          print()
-          if entries:
-              print("| 预设 | Root 管理器 | SUSFS | 需要的管理器 APK |")
-              print("| --- | --- | --- | --- |")
-              apk = {
-                  "kernelsu": "KernelSU",
-                  "kernelsu-next": "KernelSU Next",
-                  "bakasu": "BakaSU",
-                  "sukisu-ultra": "SukiSU-Ultra",
-                  "kowsu": "KowSU",
-                  "none": "不需要",
-              }
-              for entry in entries:
-                  root = entry.get("root", "none")
-                  print(f"| `{entry.get('preset')}` | `{root}` | "
-                        f"{'✅' if entry.get('susfs') else '—'} | {apk.get(root, '?')} |")
-              print()
-          print("> 每个 root 管理器的内核签名不同，**必须装对应的管理器 APK**，装错会显示“未安装”。")
-          print("> 一次只能刷一个包；换管理器时要重新刷对应那份 AK3，不能只换 APK。")
-          PY
+          {
+            echo "### ${{ matrix.name }} — ${KERNEL_RELEASE}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| root | ${ROOT_IMPL} |"
+            echo "| SUSFS | ${SUSFS} |"
+            echo "| 源码 tag | ${KERNEL_TAG:-按版本自动解析} |"
+            echo "| 产物 | \`${BOOT_NAME}.img\` |"
+            echo ""
+            if [ -f "dist/build-info-${{ matrix.name }}.md" ]; then
+              cat "dist/build-info-${{ matrix.name }}.md"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

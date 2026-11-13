@@ -1,0 +1,5 @@
+# SukiSU-Ultra（v4.3.0 / KSU 41100）
+# 符号由 SukiSU-Ultra/kernel/Kconfig 提供（prepare.sh 已把 drivers/kernelsu 软链过去）。
+# 其余开关交给 Kconfig 默认值 —— 这里只钉住"必须为 y"的那一个，
+# 多写不确定的符号只会在 olddefconfig 时被静默丢弃，反而误导排查。
+CONFIG_KSU=y

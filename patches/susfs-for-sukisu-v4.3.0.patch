@@ -1,0 +1,702 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 68e88aa8..dd27e620 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -189,6 +189,7 @@ GITHUB_API_BASE  := https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)
+ KSU_GITHUB_VER   := $(shell $(CURL_BIN) -s "$(GITHUB_API_BASE)/releases/latest" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
+ GITHUB_COMMITS   := $(shell $(CURL_BIN) -sI "$(GITHUB_API_BASE)/commits?sha=$(REPO_BRANCH)&per_page=1" 2>/dev/null | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p')
+ LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
++LOCAL_COUNT     := 3915  # 对齐 v4.3.0 release 41100
+ KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),$(VERSION_BASE))
+ VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.3.0)
+ KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index e84cffc8..0a3b424c 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -61,4 +61,98 @@ config KSU_X86_PATCH_SYSCALL_DISPATCHER
+ 	  Dynamically patch x64's hardened syscall dispatcher to support syscall hooks. This is a
+ 	  replacement for a kernel source code patch, and is useful for x86_64 LKM mode.
+ 
++menu "KernelSU - SUSFS"
++config KSU_SUSFS
++	bool "KernelSU addon - SUSFS"
++	depends on KSU
++	depends on THREAD_INFO_IN_TASK
++	default y
++	help
++	  Patch and Enable SUSFS to kernel with KernelSU.
++
++config KSU_SUSFS_SUS_PATH
++	bool "Enable to hide suspicious path"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow hiding the user-defined path and all its sub-paths from various system calls.
++	  - Use "add_sus_path_loop" instead of "add_sus_path" if the user-defined path is frequently modified.
++	  - Use with cautious as it may cause performance loss and will be vulnerable to side channel attacks,
++	  	just disable this feature if it doesn't work for you or you don't need it at all.
++	  - Effective only on zygote/zygote_next spawned user app process that is marked with TIF_PROC_UMOUNTED.
++
++config KSU_SUSFS_SUS_MOUNT
++	bool "Enable to hide suspicious mounts"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Automatically assign fake mnt_id and fake mnt_group_id for mounts mounted by ksu process until
++	    /sdcard is  decrypted, this is to evade from mnt_id/mnt_group_id gap detections.
++	  - Allow hiding all sus mounts from /proc/self/[mounts|mountinfo|mountstat] for non-su processes.
++	  - Effective only on zygote/zygote_next spawned user app process that is marked with TIF_PROC_UMOUNTED.
++
++config KSU_SUSFS_SUS_KSTAT
++	bool "Enable to spoof suspicious kstat"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow spoofing the kstat of user-defined file/directory.
++	  - Effective on all processes with (uid % 100000) >= 10000.
++
++config KSU_SUSFS_SPOOF_UNAME
++	bool "Enable to spoof uname"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow spoofing the string returned by uname syscall to user-defined string.
++	  - Effective on all processes.
++
++config KSU_SUSFS_ENABLE_LOG
++	bool "Enable logging susfs log to kernel"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow logging susfs log to kernel, uncheck it to completely disable all susfs log.
++
++config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
++	bool "Enable to automatically hide ksu and susfs symbols from /proc/kallsyms"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Automatically hide ksu and susfs symbols from '/proc/kallsyms'.
++	  - Effective on all processes.
++
++config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++	bool "Enable to spoof /proc/bootconfig (gki) or /proc/cmdline (non-gki)"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Spoof the output of /proc/bootconfig (gki) or /proc/cmdline (non-gki) with a user-defined file.
++	  - Effective on all processes.
++
++config KSU_SUSFS_OPEN_REDIRECT
++	bool "Enable to redirect a path to be opened with another path"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow redirecting a target path to be opened with another user-defined path.
++	  - Both target path and redirected path must be existed before they can be added to the kernel.
++	  - Users have to take care of the selinux permission of both target path and redirected path by themselves.
++	  - OPEN_REDIRECT does not bypass some detections by default, but users can work with SUS_KSTAT to bypass them.
++	  - Effective only on processes with pre-defined uid scheme.
++
++config KSU_SUSFS_SUS_MAP
++	bool "Enable to hide some mmapped real file from different proc maps interfaces"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow hiding mmapped real file from /proc/<pid>/[maps|smaps|smaps_rollup|map_files|mem|pagemap]
++	  - It does NOT support hiding for anon memory.
++	  - It does NOT hide any inline hooks or plt hooks cause by the injected library itself.
++	  - It may not be able to evade detections by apps that implement a good injection detection.
++	  - Effective only on zygote/zygote_next spawned user app process that is marked with TIF_PROC_UMOUNTED
++	    and with (uid % 100000) >= 10000.
++
++endmenu
++
+ endmenu
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 05888d7b..208e7f0e 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -36,4 +36,14 @@ format:
+ check-format:
+ 	$(FORMAT_FILES) | xargs -0 clang-format --dry-run --Werror
+ 
++## For susfs stuff ##
++ifeq ($(shell test -e $(srctree)/fs/susfs.c; echo $$?),0)
++$(eval SUSFS_VERSION=$(shell cat $(srctree)/include/linux/susfs.h | grep -E '^#define SUSFS_VERSION' | cut -d' ' -f3 | sed 's/"//g'))
++$(info )
++$(info -- SUSFS_VERSION: $(SUSFS_VERSION))
++else
++$(info -- You have not integrated susfs in your kernel yet.)
++$(info -- Read: https://gitlab.com/simonpunk/susfs4ksu)
++endif
++
+ # Keep a new line here!! Because someone may append config
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index a603f2c1..9f5cbd64 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -6,6 +6,7 @@
+ #include <linux/sched.h>
+ #include <linux/workqueue.h>
+ #include <linux/moduleparam.h>
++#include <linux/susfs.h>
+ 
+ #include "policy/allowlist.h"
+ #include "policy/app_profile.h"
+@@ -152,6 +153,10 @@ int __init kernelsu_init(void)
+ 
+     ksu_syscall_hook_init();
+ 
++#ifdef CONFIG_KSU_SUSFS
++    susfs_init();
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+     ksu_feature_init();
+     ksu_sulog_init();
+     ksu_adb_root_init();
+diff --git a/kernel/feature/adb_root.c b/kernel/feature/adb_root.c
+index 5945bd16..67e210b3 100644
+--- a/kernel/feature/adb_root.c
++++ b/kernel/feature/adb_root.c
+@@ -9,10 +9,13 @@
+ #include <linux/ptrace.h>
+ #include <linux/static_key.h>
+ #include <linux/slab.h>
++#include <linux/sched/task_stack.h>
++#include <linux/susfs_def.h>
+ 
+ #include "adb_root.h"
+ #include "arch.h"
+ #include "policy/feature.h"
++#include "policy/app_profile.h"
+ #include "selinux/selinux.h"
+ 
+ #include "klog.h" // IWYU pragma: keep
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index 2a41b805..5175e35d 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -32,8 +32,8 @@
+ #include "hook/lsm_hook.h"
+ 
+ static DEFINE_MUTEX(selinux_hide_mutex);
+-static bool ksu_selinux_hide_enabled __read_mostly = false;
+-static bool ksu_selinux_hide_running __read_mostly = false;
++bool ksu_selinux_hide_enabled __read_mostly = false;
++bool ksu_selinux_hide_running __read_mostly = false;
+ 
+ enum sel_inos {
+     SEL_ROOT_INO = 2,
+@@ -63,11 +63,11 @@ typedef ssize_t (*write_op_fn)(struct file *, char *, size_t);
+ 
+ static write_op_fn *selinux_write_op;
+ 
+-static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
++int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
+                                                u32 *sid, u32 def_sid, gfp_t gfp_flags, u32 *orig_sid_p, int *orig_rc_p);
+-static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
++int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
+                                                u32 *scontext_len);
+-static void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
++void security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
+                                                  struct av_decision *avd);
+ static void (*security_dump_masked_av_fn)(struct policydb *policydb, struct context *scontext, struct context *tcontext,
+                                           u16 tclass, u32 permissions, const char *reason) = NULL;
+@@ -309,10 +309,10 @@ call_orig:
+     return ((setprocattr_fn)selinux_setprocattr_hook.original)(name, value, size);
+ }
+ 
+-static DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
+-static struct page *fake_status = NULL;
++DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
++struct page *fake_status = NULL;
+ 
+-static void initialize_fake_status()
++void initialize_fake_status()
+ {
+     mutex_lock(&selinux_state.status_lock);
+     if (fake_status)
+@@ -703,7 +703,7 @@ out:
+     return rc;
+ }
+ 
+-static int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
++int security_context_to_sid_with_policy(struct selinux_policy *policy, const char *scontext, u32 scontext_len,
+                                                u32 *sid, u32 def_sid, gfp_t gfp_flags, u32 *orig_sid_p, int *orig_rc_p)
+ {
+     struct selinux_policy *orig_policy;
+@@ -846,7 +846,7 @@ static int sidtab_entry_to_string(struct policydb *p, struct sidtab *sidtab, str
+     return rc;
+ }
+ 
+-static int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
++int security_sid_to_context_with_policy(struct selinux_policy *policy, u32 sid, char **scontext,
+                                                u32 *scontext_len)
+ {
+     struct policydb *policydb;
+@@ -1219,7 +1219,7 @@ static void context_struct_compute_av(struct policydb *policydb, struct context
+     type_attribute_bounds_av(policydb, scontext, tcontext, tclass, avd);
+ }
+ 
+-static void __nocfi security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
++void __nocfi security_compute_av_user_with_policy(struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass,
+                                                          struct av_decision *avd)
+ {
+     struct policydb *policydb;
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 003f86b6..2925bf13 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -14,6 +14,7 @@
+ #include <linux/version.h>
+ #include <linux/sched/task_stack.h>
+ #include <linux/ptrace.h>
++#include <linux/susfs_def.h>
+ 
+ #include "arch.h"
+ #include "policy/allowlist.h"
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index 2c6da789..1ee3b7f1 100644
+--- a/kernel/hook/setuid_hook.c
++++ b/kernel/hook/setuid_hook.c
+@@ -11,6 +11,9 @@
+ #include <linux/types.h>
+ #include <linux/uaccess.h>
+ #include <linux/uidgid.h>
++#include <linux/workqueue.h>
++#include <linux/susfs_def.h>
++#include "selinux/selinux.h"
+ 
+ #include "policy/allowlist.h"
+ #include "hook/setuid_hook.h"
+@@ -22,8 +25,138 @@
+ #include "feature/kernel_umount.h"
+ #include "feature/mount_hide.h"
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern u32 susfs_zygote_sid;
++extern u32 susfs_zygote_next_sid;
++extern void disable_seccomp(void);
++extern struct work_struct susfs_extra_works;
++
++static inline void ksu_handle_extra_susfs_work(void)
++{
++    if (work_pending(&susfs_extra_works))
++        return;
++
++    schedule_work(&susfs_extra_works);
++}
++
++static int handle_zygote_setresuid(uid_t ruid)
++{
++    // Check if spawned process is isolated service first, and force to do umount if so
++    if (is_isolated_process(ruid)) {
++        susfs_set_current_proc_no_su();
++        susfs_set_current_proc_umounted();
++        goto do_umount;
++    }
++
++    // - Since ksu manager app uid is excluded in allow_list_arr, so ksu_uid_should_umount(manager_uid)
++    //   will always return true, that's why we need to explicitly check if new_uid belongs to
++    //   ksu manager.
++    // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
++    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
++        disable_seccomp();
++        pr_info("install fd for manager: %d\n", ruid);
++        ksu_install_fd();
++        return 0;
++    }
++
++    // - Check if spawned process is normal user app and needs to be umounted
++    // - Now app_profile for webview_zygote is available in KernelSU manager
++    if (likely(is_appuid(ruid) && ksu_uid_should_umount(ruid))) {
++        susfs_set_current_proc_no_su();
++        susfs_set_current_proc_umounted();
++        goto do_umount;
++    }
++
++    // Disable seccomp restriction for root allowed apps since running with "su" will disable seccomp anyway
++    if (ksu_is_allow_uid_for_current(ruid)) {
++        disable_seccomp();
++        return 0;
++    }
++
++    // Process not umounted but also root not allowed
++    susfs_set_current_proc_no_su();
++    return 0;
++
++do_umount:
++    {
++        // Handle kernel umount
++        ksu_handle_umount(current_uid().val, ruid);
++
++        // Handle extra susfs work
++        ksu_handle_extra_susfs_work();
++    }
++
++    return 0;
++}
++
++static int handle_zygote_next_setresuid(uid_t ruid)
++{
++    // Check if spawned process is isolated service first, and force to do umount if so
++    if (is_isolated_process(ruid)) {
++        susfs_set_current_proc_no_su();
++        susfs_set_current_proc_umounted();
++        susfs_set_current_proc_umounted_for_zygote_next();
++        goto do_susfs_work;
++    }
++
++    // - Since ksu manager app uid is excluded in allow_list_arr, so ksu_uid_should_umount(manager_uid)
++    //   will always return true, that's why we need to explicitly check if new_uid belongs to
++    //   ksu manager.
++    // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
++    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
++        disable_seccomp();
++        pr_info("install fd for manager: %d\n", ruid);
++        ksu_install_fd();
++        return 0;
++    }
++
++    // - Check if spawned process is normal user app and needs to be umounted
++    // - Now app_profile for webview_zygote is available in KernelSU manager
++    if (likely(is_appuid(ruid) && ksu_uid_should_umount(ruid))) {
++        susfs_set_current_proc_no_su();
++        susfs_set_current_proc_umounted();
++        susfs_set_current_proc_umounted_for_zygote_next();
++        goto do_susfs_work;
++    }
++
++    // Disable seccomp restriction for root allowed apps since running with "su" will disable seccomp anyway
++    if (ksu_is_allow_uid_for_current(ruid)) {
++        disable_seccomp();
++        return 0;
++    }
++
++    // Process not umounted but also root not allowed
++    susfs_set_current_proc_no_su();
++    return 0;
++
++do_susfs_work:
++    {
++        // Do not umount here as we are in init namespace now
++
++        // Handle extra susfs work
++        ksu_handle_extra_susfs_work();
++    }
++
++    return 0;
++}
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+ int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
+ {
++#ifdef CONFIG_KSU_SUSFS
++    // We only interest in processes spawned by zygote or zygote_next.
++    // Unlike upstream KernelSU's LSM hook, SukiSU invokes this handler *after*
++    // setresuid() has taken effect, so a root caller (old_uid == 0) is what
++    // identifies a zygote child here.
++    if (old_uid == 0) {
++        if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))
++            return handle_zygote_setresuid(new_uid);
++
++        if (susfs_is_sid_equal(current_cred(), susfs_zygote_next_sid))
++            return handle_zygote_next_setresuid(new_uid);
++    }
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+     // we rely on the fact that zygote always call setresuid(3) with same uids
+ 
+     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+diff --git a/kernel/hook/syscall_event_bridge.c b/kernel/hook/syscall_event_bridge.c
+index cfa58371..82b28dd4 100644
+--- a/kernel/hook/syscall_event_bridge.c
++++ b/kernel/hook/syscall_event_bridge.c
+@@ -3,6 +3,8 @@
+ #include "linux/jump_label.h"
+ #include "linux/printk.h"
+ #include "selinux/selinux.h"
++#include <linux/thread_info.h>
++#include <linux/susfs_def.h>
+ #include <asm/syscall.h>
+ #include <linux/fcntl.h>
+ #include <linux/ptrace.h>
+@@ -45,6 +47,13 @@ static int ksu_handle_init_mark_tracker(const char __user **filename_user)
+                       strstr(path, "/stub_zygote") == NULL)) {
+         pr_info("hook_manager: unmark %d exec %s\n", current->pid, path);
+         ksu_clear_task_tracepoint_flag_if_needed(current);
++#ifdef CONFIG_KSU_SUSFS
++        pr_info("susfs: mark no sucompat checks for pid: '%d', exec: '%s'\n", current->pid, path);
++        susfs_set_current_proc_no_su();
++        // - marking proc umounted here is useless because only zygote spawned processes will umount
++        //   the sus mounts, tho other susfs features still rely on proc_umounted check, but
++        //   it is fine to not spoof for init spawned processes.
++#endif // #ifdef CONFIG_KSU_SUSFS
+     }
+ 
+     return 0;
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 01f13a2f..9ef5356e 100644
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -79,7 +79,7 @@ void seccomp_filter_release(struct task_struct *tsk);
+ static bool has_call_to_spin_lock = false;
+ #endif
+ 
+-static void disable_seccomp(void)
++void disable_seccomp(void)
+ {
+     struct task_struct *fake;
+ 
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 768b9a26..2595940b 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -161,6 +161,8 @@ void apply_kernelsu_rules()
+     ksu_destroy_sepolicy(old_pol);
+ 
+     reset_avc_cache();
++
++    susfs_set_batch_sid();
+ out_unlock:
+     mutex_unlock(&selinux_state.policy_mutex);
+ }
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index e5dcc4d3..1abd098f 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -234,3 +234,93 @@ void escape_to_root_for_adb_root(void)
+     }
+     commit_creds(cred);
+ }
++
++
++#define KERNEL_INIT_DOMAIN "u:r:init:s0"
++#define KERNEL_ZYGOTE_DOMAIN "u:r:zygote:s0"
++#define KERNEL_ZYGOTE_NEXT_DOMAIN "u:r:zygote_next:s0"
++#define KERNEL_PRIV_APP_DOMAIN "u:r:priv_app:s0:c512,c768"
++
++u32 susfs_ksu_sid __read_mostly = 0;
++u32 susfs_init_sid __read_mostly = 0;
++u32 susfs_zygote_sid __read_mostly = 0;
++u32 susfs_zygote_next_sid __read_mostly = 0;
++u32 susfs_priv_app_sid __read_mostly = 0;
++
++static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
++{
++    int err;
++    
++    if (!secctx_name || !out_sid) {
++        pr_err("secctx_name || out_sid is NULL\n");
++        return;
++    }
++
++    err = security_secctx_to_secid(secctx_name, strlen(secctx_name),
++                       out_sid);
++    if (err) {
++        pr_err("failed setting sid for '%s', err: %d\n", secctx_name, err);
++        return;
++    }
++    pr_info("sid '%u' is set for secctx_name '%s'\n", *out_sid, secctx_name);
++}
++
++bool susfs_is_sid_equal(const struct cred *cred, u32 sid2) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
++    const struct task_security_struct *tsec = selinux_cred(cred);
++#else
++    const struct cred_security_struct *tsec = selinux_cred(cred);
++#endif
++
++    if (!tsec) {
++        return false;
++    }
++    return tsec->sid == sid2;
++}
++
++u32 susfs_get_sid_from_name(const char *secctx_name)
++{
++    u32 out_sid = 0;
++    int err;
++    
++    if (!secctx_name) {
++        pr_err("secctx_name is NULL\n");
++        return 0;
++    }
++    err = security_secctx_to_secid(secctx_name, strlen(secctx_name),
++                       &out_sid);
++    if (err) {
++        pr_err("failed getting sid from secctx_name: %s, err: %d\n", secctx_name, err);
++        return 0;
++    }
++    return out_sid;
++}
++
++u32 susfs_get_current_sid(void) {
++    return current_sid();
++}
++
++bool susfs_is_current_zygote_domain(void) {
++    return unlikely(current_sid() == susfs_zygote_sid);
++}
++
++bool susfs_is_current_zygote_next_domain(void) {
++    return unlikely(current_sid() == susfs_zygote_next_sid);
++}
++
++bool susfs_is_current_ksu_domain(void) {
++    return unlikely(current_sid() == susfs_ksu_sid);
++}
++
++bool susfs_is_current_init_domain(void) {
++    return unlikely(current_sid() == susfs_init_sid);
++}
++
++void susfs_set_batch_sid(void)
++{
++    susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
++    susfs_set_sid(KERNEL_ZYGOTE_NEXT_DOMAIN, &susfs_zygote_next_sid);
++    susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
++    susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
++    susfs_set_sid(KERNEL_PRIV_APP_DOMAIN, &susfs_priv_app_sid);
++}
+diff --git a/kernel/selinux/selinux.h b/kernel/selinux/selinux.h
+index 158f9455..7048d71f 100644
+--- a/kernel/selinux/selinux.h
++++ b/kernel/selinux/selinux.h
+@@ -42,4 +42,13 @@ void escape_to_root_for_adb_root();
+ 
+ extern u32 ksu_file_sid;
+ 
++bool susfs_is_sid_equal(const struct cred *cred, u32 sid2);
++u32 susfs_get_sid_from_name(const char *secctx_name);
++u32 susfs_get_current_sid(void);
++void susfs_set_batch_sid(void);
++bool susfs_is_current_zygote_domain(void);
++bool susfs_is_current_zygote_next_domain(void);
++bool susfs_is_current_ksu_domain(void);
++bool susfs_is_current_init_domain(void);
++
+ #endif
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index 3bbc7ad3..a417bcc5 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -8,6 +8,8 @@
+ #include <linux/uaccess.h>
+ #include <linux/version.h>
+ #include <linux/thread_info.h>
++#include <linux/namei.h>
++#include <linux/susfs.h>
+ #include "uapi/supercall.h"
+ #include "supercall/internal.h"
+ #include "arch.h" // IWYU pragma: keep
+@@ -151,6 +153,9 @@ static int do_report_event(void __user *arg)
+             } else {
+                 pr_info("boot_complete triggered\n");
+                 on_boot_completed();
++#ifdef CONFIG_KSU_SUSFS
++                susfs_start_sdcard_monitor_fn();
++#endif // #ifdef CONFIG_KSU_SUSFS
+             }
+         }
+         break;
+@@ -495,6 +500,11 @@ static int do_manage_mark(void __user *arg)
+             pr_err("manage_mark: get failed for pid %d: %d\n", cmd.pid, ret);
+             return ret;
+         }
++#ifdef CONFIG_KSU_SUSFS
++        if (susfs_is_current_proc_no_su()) {
++            ret = 0; // SYSCALL_TRACEPOINT is NOT flagged
++        }
++#endif // #ifdef CONFIG_KSU_SUSFS
+         cmd.result = (u32)ret;
+         break;
+     }
+@@ -540,6 +550,86 @@ static int do_manage_mark(void __user *arg)
+     return 0;
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS
++int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
++{
++    if (magic1 != KSU_INSTALL_MAGIC1) {
++        return -EINVAL; 
++    }
++
++    // If magic2 is susfs and current process is root
++    if (magic2 == SUSFS_MAGIC && current_uid().val == 0) {
++        switch(cmd) {
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++            case CMD_SUSFS_ADD_SUS_PATH:
++                susfs_add_sus_path(arg);
++                return 0;
++            case CMD_SUSFS_ADD_SUS_PATH_LOOP:
++                susfs_add_sus_path_loop(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++            case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
++                susfs_set_hide_sus_mnts_for_non_su_procs(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++            case CMD_SUSFS_ADD_SUS_KSTAT:
++                susfs_add_sus_kstat(arg);
++                return 0;
++            case CMD_SUSFS_UPDATE_SUS_KSTAT:
++                susfs_update_sus_kstat(arg);
++                return 0;
++            case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
++                susfs_add_sus_kstat(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++            case CMD_SUSFS_SET_UNAME:
++                susfs_set_uname(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
++            case CMD_SUSFS_ENABLE_LOG:
++                susfs_enable_log(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
++#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++            case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
++                susfs_set_cmdline_or_bootconfig(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++            case CMD_SUSFS_ADD_OPEN_REDIRECT:
++                susfs_add_open_redirect(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++            case CMD_SUSFS_ADD_SUS_MAP:
++                susfs_add_sus_map(arg);
++                return 0;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
++            case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
++                susfs_set_avc_log_spoofing(arg);
++                return 0;
++            case CMD_SUSFS_SHOW_ENABLED_FEATURES:
++                susfs_get_enabled_features(arg);
++                return 0;
++            case CMD_SUSFS_SHOW_VARIANT:
++                susfs_show_variant(arg);
++                return 0;
++            case CMD_SUSFS_SHOW_VERSION:
++                susfs_show_version(arg);
++                return 0;
++            default:
++                return -EINVAL;
++        }
++    }
++
++    return -EINVAL;
++}
++#endif // #ifdef CONFIG_KSU_SUSFS
++
+ static int do_nuke_ext4_sysfs(void __user *arg)
+ {
+     struct ksu_nuke_ext4_sysfs_cmd cmd;
