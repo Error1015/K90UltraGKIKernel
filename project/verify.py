@@ -36,6 +36,26 @@ def cfg_value(config: str, name: str) -> str:
     return "?"
 
 
+# 附加功能的名字在 workflow 里是逐个 export 的环境变量（NOMOUNT/BBG/...），
+# 直接读环境，build-info 里就能写清"这一次到底开了哪些"。
+# 之前 build-info 不记这一项，排查时只能靠配置反推，白绕过一次弯。
+FEATURE_ENV = (
+    ("nomount", "NoMount"),
+    ("bbg", "BBG"),
+    ("ntsync", "NTSync"),
+    ("networking", "networking"),
+    ("bpf", "BTF/eBPF"),
+    ("droidspaces", "DroidSpaces"),
+    ("unicode", "unicode"),
+)
+
+
+def features_text() -> str:
+    on = [label for env, label in FEATURE_ENV
+          if os.environ.get(env.upper(), "").strip().lower() in ("1", "true", "yes", "on")]
+    return "、".join(f"`{x}`" for x in on) if on else "无（全部关闭）"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--boot", required=True)
@@ -128,7 +148,8 @@ def main() -> int:
         fh.write("\n")
         if args.root != "none":
             fh.write(f"- SUSFS：`{'on' if susfs else 'off'}`\n")
-        fh.write(f"- boot.img 大小：{len(boot)} 字节（= 分区大小，含 vbmeta 与 AVB footer）\n")
+        fh.write(f"- 附加功能：{features_text()}\n")
+        fh.write(f"- boot.img 大小：{len(boot)} 字节（= 分区大小，含 vbmeta + 原厂 AVB 尾部 + footer）\n")
         fh.write(f"- 内核 Image：{len(image)} 字节\n")
         fh.write(f"- 源码：ACK `android15-6.6` @ `6.6.{args.sublevel}`\n\n")
         fh.write("## 刷入\n\n```bash\n")
