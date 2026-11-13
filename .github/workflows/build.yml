@@ -78,35 +78,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 先算矩阵。
+  # GitHub 的 job 级 if 是在展开矩阵之前求值的，那里没有 matrix 上下文
+  # （写 if: matrix.xxx 会直接报 Unrecognized named-value: 'matrix'），
+  # 所以"要不要跑第二条腿"必须在这一步决定，输出一个干净的 JSON。
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gen
+        shell: bash
+        env:
+          ROOT_INPUT: ${{ inputs.root }}
+          SUSFS_INPUT: ${{ inputs.susfs }}
+          NOMOUNT_INPUT: ${{ inputs.nomount }}
+          BBG_INPUT: ${{ inputs.bbg }}
+          NTSYNC_INPUT: ${{ inputs.ntsync }}
+          NETWORKING_INPUT: ${{ inputs.networking }}
+          BPF_INPUT: ${{ inputs.bpf }}
+          DROIDSPACES_INPUT: ${{ inputs.droidspaces }}
+          UNICODE_INPUT: ${{ inputs.unicode }}
+        run: |
+          set -euo pipefail
+          M="$(python3 project/matrix.py)"
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          echo "构建矩阵: $M"
+
   build:
     name: ${{ matrix.name }}
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    if: matrix.name == 'vanilla' || inputs.root != 'none'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: vanilla
-            root: none
-            susfs: 'false'
-            nomount: 'false'
-            bbg: 'false'
-            ntsync: 'false'
-            networking: 'false'
-            bpf: 'false'
-            droidspaces: 'false'
-            unicode: 'false'
-          - name: ${{ inputs.root }}
-            root: ${{ inputs.root }}
-            susfs: ${{ inputs.susfs }}
-            nomount: ${{ inputs.nomount }}
-            bbg: ${{ inputs.bbg }}
-            ntsync: ${{ inputs.ntsync }}
-            networking: ${{ inputs.networking }}
-            bpf: ${{ inputs.bpf }}
-            droidspaces: ${{ inputs.droidspaces }}
-            unicode: ${{ inputs.unicode }}
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
 
     env:
       ANDROID_BRANCH: android15-6.6
