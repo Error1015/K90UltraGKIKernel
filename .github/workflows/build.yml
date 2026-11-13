@@ -196,6 +196,17 @@ jobs:
           python3 project/pack.py pack dist/Image "dist/${NAME}.img"
           echo "BOOT_NAME=${NAME}" >> "$GITHUB_ENV"
 
+      # AK3 包只把上面那个完整镜像 dd 进 boot 分区，不在设备上重打包
+      # （重打包会丢 vbmeta 与 AVB footer，就是之前卡 logo 的原因）
+      - name: 打包 AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+          AK3="ak3-warsaw-${{ matrix.name }}-${KERNEL_RELEASE}"
+          bash project/ak3.sh "dist/${BOOT_NAME}.img" "dist/${AK3}.zip" \
+            "warsaw GKI ${KERNEL_RELEASE} · ${{ matrix.name }}" "warsaw"
+          echo "AK3_NAME=${AK3}" >> "$GITHUB_ENV"
+
       - name: 产物验收
         shell: bash
         run: |
@@ -214,6 +225,7 @@ jobs:
           name: ${{ env.BOOT_NAME }}
           path: |
             dist/*.img
+            dist/*.zip
             dist/Image
             dist/build-info-*.md
             dist/kernel-version.txt
@@ -290,6 +302,8 @@ jobs:
 
           # 展平到 dist/ 供上传 Release（附件名不能带目录）
           for f in "${imgs[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
+          mapfile -t zips < <(find dl -type f -name 'ak3-*.zip' | sort)
+          for f in "${zips[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
           mapfile -t infos < <(find dl -type f -name 'build-info-*.md' | sort)
           for f in "${infos[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
 
@@ -298,13 +312,27 @@ jobs:
             echo
             echo "同一份源码、同一份配置，只有 root 不同。刷哪个就装哪个的管理器 APK。"
             echo
-            echo "| 包 | 大小 |"
+            echo "两种刷法，内容完全一致："
+            echo
+            echo "- \`.img\`：电脑上 \`fastboot flash boot xxx.img\`"
+            echo "- \`.zip\`：AnyKernel3 包，在 recovery / 内核管理器里直接刷（手机上就能刷）"
+            echo
+            echo "| boot.img | 大小 |"
             echo "| --- | --- |"
           } > dist/RELEASE.md
 
           for f in "${imgs[@]}"; do
             echo "| \`$(basename "$f")\` | $(stat -c %s "$f") 字节 |" >> dist/RELEASE.md
           done
+
+          if [ "${#zips[@]}" -gt 0 ]; then
+            echo >> dist/RELEASE.md
+            echo "| AnyKernel3 | 大小 |" >> dist/RELEASE.md
+            echo "| --- | --- |" >> dist/RELEASE.md
+            for f in "${zips[@]}"; do
+              echo "| \`$(basename "$f")\` | $(stat -c %s "$f") 字节 |" >> dist/RELEASE.md
+            done
+          fi
 
           if [ "${#infos[@]}" -gt 0 ]; then
             echo >> dist/RELEASE.md
@@ -326,6 +354,7 @@ jobs:
           body_path: dist/RELEASE.md
           files: |
             dist/*.img
+            dist/ak3-*.zip
             dist/build-info-*.md
           prerelease: ${{ inputs.release == 'prerelease' }}
           make_latest: false

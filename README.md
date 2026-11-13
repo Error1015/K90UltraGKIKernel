@@ -1,8 +1,9 @@
 # K90 Ultra GKI Kernel（warsaw / SM8750 / 6.6）
 
 为 **Redmi K90 Ultra（代号 warsaw，SM8750，内核 6.6.118，4K 页）** 构建 GKI 内核，
-默认内置 **BakaSU + SUSFS**（也支持 SukiSU-Ultra / KernelSU / KernelSU-Next / KowSU），
-产物是一个 **可以直接 `fastboot flash boot` 的完整 boot.img**。
+默认内置 **BakaSU + SUSFS**（也支持 SukiSU-Ultra / KernelSU / KernelSU-Next / KowSU）。
+每次出两样东西：**完整 boot.img**（`fastboot flash boot`）和**对应的 AnyKernel3 zip**
+（recovery / 内核管理器直接刷）。两者内容完全一致。
 
 > **这一版是重做的。** 旧版"构建成功但刷进去卡 logo"的根因已经定位（见第二节），
 > 旧代码整体放在 `legacy/` 里仅作参考，不再参与构建。
@@ -80,12 +81,22 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 
 | `root` 输入 | 产出 |
 | --- | --- |
-| `bakasu`（默认） | `boot-warsaw-bakasu-6.6.118.img` |
-| 指定某一个管理器 | `boot-warsaw-<管理器>-6.6.118.img` |
-| `all` | 5 个包（bakasu / sukisu-ultra / kernelsu / kernelsu-next / kowsu），一个 job 一个，并行 |
-| `none` | `boot-warsaw-none-6.6.118.img`，纯内核（排查用） |
+| `bakasu`（默认） | `boot-warsaw-bakasu-6.6.118.img` + `ak3-warsaw-bakasu-6.6.118.zip` |
+| 指定某一个管理器 | 同上的 `<管理器>` 版本 |
+| `all` | 5 套（bakasu / sukisu-ultra / kernelsu / kernelsu-next / kowsu），一个 job 一个，并行 |
+| `none` | `boot-warsaw-none-6.6.118.img` + `ak3-warsaw-none-6.6.118.zip`，纯内核（排查用） |
 
-都是 96MB 完整分区镜像，**没有 zip，不要用 recovery 刷**。
+每套都给两种刷法，内容完全一致：
+
+| 文件 | 怎么刷 |
+| --- | --- |
+| `boot-warsaw-*.img` | 电脑上 `fastboot flash boot xxx.img`（96MB 完整分区镜像） |
+| `ak3-warsaw-*.zip` | AnyKernel3 包，recovery / 内核管理器直接刷，手机上就能完成 |
+
+**关于 AK3 的一个前提**：这个 zip 里装的是**完整分区镜像**，安装脚本只做 `dd`，
+不在设备上重打包。因为这台机器 boot 分区里有 vbmeta blob 和 AVB footer，
+用传统的「解包 → 只换内核 → repack」一定会把它们弄坏，表现就是卡 logo。
+所以别拿这份 AK3 去套别的内核，也别用别的内核的 AK3 刷这台机。
 
 ### root 支持情况
 
@@ -156,12 +167,15 @@ adb pull /sdcard/stock_init_boot.img
 #    必须先把 init_boot 回原厂 —— 这一步漏了，GKI 内核一定卡 logo
 fastboot flash init_boot stock_init_boot.img
 
-# 2) 刷本仓库的 boot.img（完整分区镜像，不是 zip）
+# 2) 刷本仓库的 boot.img（完整分区镜像，不是普通 AK3 的内核包）
 fastboot flash boot boot-warsaw-sukisu-6.6.118.img
 
 # 3) 重启
 fastboot reboot
 ```
+
+没有电脑时用 AK3 的那个 zip：recovery 里 install，或者用内核管理器 App 选这个 zip。
+它在安装前会先把当前 boot 备份到 `/sdcard/boot-backup-<时间>.img`，写完后回读前 1MB 校验。
 
 刷完管理器首页应该显示 **GKI 模式 / 已安装**，不需要再 patch 任何分区。
 包里集成的是哪个管理器的内核代码，就**必须装哪一个的管理器 APK**，装别家会显示"未安装"：
@@ -210,7 +224,10 @@ project/
   resolve_tag.py              6.6.118 → ACK 发布 tag
   pin_manifest.py             把 manifest 里 common 的 revision 钉到 tag
   susfs_66_compat.py          SUSFS 在 6.6 上的固定编译坑（幂等）
+  ak3.sh                      把完整 boot.img 封成 AnyKernel3 zip
   lib.sh                      日志 / 补丁 / 配置片段
+ak3/
+  anykernel.sh                AK3 安装脚本（dd 整分区镜像，不重打包）
 configs/
   warsaw_defconfig            原厂完整配置（从 boot.img 提取，勿手改）
   base.fragment               必须项（关符号裁剪、版本串）

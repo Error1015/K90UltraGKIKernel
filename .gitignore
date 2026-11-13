@@ -1,6 +1,9 @@
 # 构建产物
 out/
 dist/
+
+# 构建期 clone 的 AnyKernel3 骨架（ak3.sh 会自己拉）
+.ak3-template/
 kernel/
 SukiSU-Ultra/
 susfs4ksu/

@@ -136,6 +136,8 @@ def main() -> int:
         fh.write("fastboot flash init_boot stock_init_boot.img\n")
         fh.write("# 1) 刷本包\nfastboot flash boot boot-warsaw.img\n")
         fh.write("# 2) 重启\nfastboot reboot\n```\n\n")
+        fh.write("同一个 Release 里的 `ak3-warsaw-*.zip` 是同样的镜像封成的 AnyKernel3 包，\n"
+                 "recovery 里 install 或用内核管理器 App 刷都行，手机上就能完成。\n\n")
         if args.root != "none":
             fh.write(f"> 内核里集成的是 **{args.root}** 的代码，必须装 {manager}，"
                      "装别家会显示\"未安装\"。\n")
