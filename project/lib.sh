@@ -49,6 +49,21 @@ case "$STOCK_VERSION" in
     exit 1 ;;
 esac
 
+# ---------------------------------------------------------------------------
+# 原厂内核自己报出来的源码 commit。
+#
+# 版本串里的 "g0908354dac1b" 是编译这版内核的 common 树的 commit 前 12 位，
+# 由 scripts/setlocalversion 自动生成 —— 内核不会撒谎，这就是原厂用的那份代码。
+#
+# 之前钉的是 tag android15-6.6.118_r00，那只是「6.6.118 的第一个发布」，
+# 不保证等于这个 commit（两者可能差几百个提交）。想编出「原生内核」，
+# 配置对上还不够，代码也得是同一份。
+#
+# 解析不到就留空 —— prepare.sh 会退回 tag，不会因此中断构建。
+# ---------------------------------------------------------------------------
+KERNEL_COMMIT="${KERNEL_COMMIT:-$(printf '%s' "$STOCK_VERSION" \
+  | sed -n 's/.*-g\([0-9a-f]\{7,40\}\)-.*/\1/p')}"
+
 KROOT="$WS/kernel"        # repo sync 出来的 kernel_platform 根
 COMMON="$KROOT/common"    # GKI 通用内核源码（真正的内核树）
 OUT="$WS/out"             # O= 构建目录

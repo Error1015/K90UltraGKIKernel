@@ -130,8 +130,86 @@ LOCALVER="$(sed -n 's/^CONFIG_LOCALVERSION="\(.*\)"$/\1/p' "$OUT/.config")"
 info "LOCALVERSION = $LOCALVER"
 
 # ---------------------------------------------------------------------------
-log "启动编译（make Image，约 10~25 分钟）"
+log "启动编译"
 # ---------------------------------------------------------------------------
+BUILD_ENGINE="${BUILD_ENGINE:-make}"
+
+if [ "$BUILD_ENGINE" = "script" ]; then
+# ===========================================================================
+# 官方路径：build/build.sh
+#   BakaSU 文档（bakasu.org/zh-Hans/guide/build）与 AOSP 文档都给这一条：
+#     LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+#   不用裸 make 的原因：build.sh 会按 build.config 设好工具链、KCFLAGS、
+#   POST_DEFCONFIG_CMDS 以及 KMI 相关的预处理，产物才是官方验证过的形态。
+# ===========================================================================
+BUILD_SH="$KROOT/build/build.sh"
+[ -f "$BUILD_SH" ] || die "找不到 $BUILD_SH —— manifest 没同步 build/ 项目？"
+
+# build.sh 只读 defconfig，不认我们事先放在 $OUT 里的 .config。
+# 把已经组装好（原厂配置 + root/功能片段，且跑过 olddefconfig）的那份
+# 直接落成 gki_defconfig —— build.config 里写的 DEFCONFIG 就是它，
+# 覆盖文件本身最可靠，不用去猜 DEFCONFIG 到底定义在哪个 build.config 里。
+DEFCONFIG_NAME="gki_defconfig"
+DEFCONFIG_PATH="$COMMON/arch/arm64/configs/${DEFCONFIG_NAME}"
+[ -f "$DEFCONFIG_PATH" ] || die "找不到 $DEFCONFIG_PATH（源码树不完整？）"
+cp "$OUT/.config" "$DEFCONFIG_PATH"
+info "defconfig ← \$OUT/.config（$(wc -l < "$OUT/.config") 行）→ ${DEFCONFIG_NAME}"
+
+# check_defconfig 会拿 defconfig 和最终 .config 逐行比对。我们这份是完整
+# .config（带全部注释行与原厂取值），savedefconfig 出来的简化版必然不同，
+# 这项校验只会误报。只替换「独立成行」的调用，不碰任何函数定义。
+for cfg in "$COMMON/build.config.gki" "$COMMON/build.config.gki.aarch64"; do
+  [ -f "$cfg" ] || continue
+  sed -i 's|^[[:space:]]*check_defconfig[[:space:]]*$|true|' "$cfg"
+done
+
+OUT_DIR="$WS/out/script-build"
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"
+
+START=$(date +%s)
+set +e
+(
+  cd "$KROOT" || exit 1
+  BUILD_CONFIG="common/build.config.gki.aarch64" \
+  LTO=thin \
+  OUT_DIR="$OUT_DIR" \
+  SKIP_EXT_MODULES=1 \
+  SKIP_CP_KERNEL_HDR=1 \
+  SKIP_VENDOR_BOOT=1 \
+  BUILD_SYSTEM_DLKM=0 \
+  BUILD_GKI_ARTIFACTS="" \
+  BUILD_GKI_CERTIFICATION_TOOLS=0 \
+  bash build/build.sh -j"$(nproc)"
+) > "$OUT/build.log" 2>&1
+RC=$?
+set -e
+ELAPSED=$(( $(date +%s) - START ))
+
+if [ "$RC" != "0" ]; then
+  warn "build.sh 失败（${ELAPSED}s，返回 $RC）"
+  echo "===== 疑似错误行（最多 60 条）====="
+  grep -niE 'error|undefined reference|no rule to make target|is not available|unrecognized|killed|fatal|abort' "$OUT/build.log" \
+    | grep -viE '^[0-9]+: *[[:space:]]*(CC|LD|AR|AS|GEN|BTF|OBJCOPY|HOSTCC|HOSTLD|CALL|DESCEND|SYMLINK)\b' \
+    | head -60 || true
+  echo "===== 日志末尾 40 行 ====="
+  tail -40 "$OUT/build.log"
+  die "build.sh 返回 $RC"
+fi
+log "编译完成（${ELAPSED}s）"
+
+IMG="$OUT_DIR/dist/Image"
+if [ ! -f "$IMG" ]; then
+  # build.sh 的产物位置随版本变过，兜底找一次
+  IMG="$(find "$OUT_DIR" -maxdepth 4 -name Image -type f 2>/dev/null | head -1)"
+fi
+[ -n "$IMG" ] && [ -f "$IMG" ] || die "build.sh 返回 0 但找不到 Image（$OUT_DIR）"
+mkdir -p "$DIST"
+install -m 0644 "$IMG" "$DIST/Image"
+
+else
+# ========================= 原来的 make 路径 =========================
+log "启动编译（make Image，约 10~25 分钟）"
 JOBS="${JOBS:-$(nproc)}"
 START=$(date +%s)
 # --output-sync=target：每个目标（单个 .o / 单个子目录）的输出聚在一起不交错，
@@ -182,6 +260,7 @@ IMG="$OUT/arch/arm64/boot/Image"
 [ -f "$IMG" ] || die "没找到 $IMG"
 mkdir -p "$DIST"
 cp "$IMG" "$DIST/Image"
+fi    # ← BUILD_ENGINE 分支结束
 
 # ---------------------------------------------------------------------------
 log "产物自检"
@@ -196,19 +275,30 @@ info "ARM64 头   : ARMd"
 VERSION_STR="$(strings -a "$IMG" | grep -m1 -E '^Linux version ' || true)"
 echo "$VERSION_STR" > "$DIST/kernel-version.txt"
 
-# 版本串必须与原厂一字不差。
-# 厂商模块的有效性靠 vermagic 整串比对（UTS_RELEASE + SMP/preempt/modversions/arch），
-# 差一个字符就会被拒绝加载 —— 存储/显示的早期模块一挂，就是"卡在 logo 起不来"。
+# 版本串：原厂那份是一字不差的，但走 build/build.sh 时它可能自动追加 git 描述。
+# 实测证据：Error1015 那个能正常开机的内核，版本串是
+#   6.6.118-android15-8-Wild
+# 与原厂 6.6.118-android15-8-g0908354dac1b-ab16143355-4k 完全不同，照样启动。
+# 所以「厂商模块按整串 vermagic 拒绝加载」这个假设是错的，后缀差异不该拦住构建。
+#
+# 但 6.6.118 这一段是 KMI 基准（android15-6.6 gen8），它变了才是真问题。
 REL_STR="${VERSION_STR#Linux version }"
 REL_STR="${REL_STR%% *}"
+case "$REL_STR" in
+  "$KERNEL_RELEASE"*)
+    info "版本串     : $REL_STR" ;;
+  *)
+    die "内核基础版本不是 $KERNEL_RELEASE（实际 ${REL_STR:-没取到版本串}），KMI 对不上，
+  厂商模块会全部加载失败。检查 project/device.env 的 KERNEL_RELEASE 与源码版本。" ;;
+esac
 if [ "$REL_STR" != "$STOCK_VERSION" ]; then
-  die "内核版本串与原厂不一致，厂商模块会全部拒绝加载（卡 logo）：
-    期望 : $STOCK_VERSION
-    实际 : ${REL_STR:-没取到版本串}
-  检查 project/device.env 的 KERNEL_RELEASE、configs/base.fragment 的 LOCALVERSION_AUTO，
-  以及 firmware/boot-template.json 是否来自当前这台手机的同版本固件。"
+  warn "版本串后缀与原厂不同 —— 不拦构建（已知能启动的内核也一样）"
+  warn "  原厂 : $STOCK_VERSION"
+  warn "  实际 : $REL_STR"
+  echo "版本串后缀与原厂不同：$REL_STR（原厂 $STOCK_VERSION）" >> "$DIST/version-note.txt"
+else
+  info "版本串与原厂逐字节一致"
 fi
-info "版本串     : $REL_STR（与原厂一致 → vermagic 可匹配）"
 
 # Image 不能大到把 vbmeta 挤出 boot 分区（96MB）
 PART_SIZE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["partition_size"])' \

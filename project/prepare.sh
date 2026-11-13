@@ -135,6 +135,61 @@ retry 2 sync_once || die "repo sync 失败（googlesource 限速时重跑即可�
 [ -f "$COMMON/Makefile" ] || die "同步后找不到 $COMMON/Makefile"
 
 # ---------------------------------------------------------------------------
+log "阶段 1b/6：切到原厂内核 commit"
+# ---------------------------------------------------------------------------
+# repo sync 拿到的只是 manifest 指向的 revision（我们钉的 tag）。
+# 但原厂内核版本串里的 g<sha> 才是它真正编译用的那版代码。
+# 两者不是一回事：tag 是「6.6.118 的第一次发布」，原厂可能用了之后的提交。
+# 配置对齐了、代码没对齐，编出来的仍然不是同一个内核。
+if [ -n "$KERNEL_COMMIT" ]; then
+  info "目标 commit: $KERNEL_COMMIT（来自原厂版本串 $STOCK_VERSION）"
+
+  if git -C "$COMMON" cat-file -e "${KERNEL_COMMIT}^{commit}" 2>/dev/null; then
+    info "本地已有该 commit"
+  else
+    info "本地没有，按 sha 从远端补拉（--depth 1）"
+    if retry 3 git -C "$COMMON" fetch --depth 1 origin "$KERNEL_COMMIT" < /dev/null; then
+      info "补拉成功"
+    else
+      warn "按 sha 补拉失败（远端多半不允许按任意 sha fetch）"
+      warn "退回 tag $KERNEL_TAG —— 本轮编出来的不是原厂那份代码"
+      KERNEL_COMMIT=""
+    fi
+  fi
+
+  if [ -n "$KERNEL_COMMIT" ]; then
+    git -C "$COMMON" checkout -q --detach "$KERNEL_COMMIT" \
+      || die "checkout $KERNEL_COMMIT 失败"
+    GOT_SHA="$(git -C "$COMMON" rev-parse HEAD 2>/dev/null || echo unknown)"
+    info "common HEAD = $GOT_SHA"
+    # 记进 build-info，方便事后确认这一个包到底用的哪份源码
+    echo "KERNEL_COMMIT=$GOT_SHA" >> "${GITHUB_ENV:-/dev/null}"
+  fi
+else
+  warn "版本串里解析不到源码 commit，使用 tag $KERNEL_TAG"
+fi
+
+# ---------------------------------------------------------------------------
+# 探测：这棵源码树认不认原厂的 GKI task_struct 布局
+# ---------------------------------------------------------------------------
+# 原厂内核里 CONFIG_GKI_TASK_STRUCT_VENDOR_SIZE_MAX=1024，厂商模块按这个
+# 布局算 task_struct 偏移。这组符号只有在 init/Kconfig.gki 里存在时才可能生效；
+# 不存在的树上，原厂 .config 里那几行会被 olddefconfig 静默丢掉。
+# 这里只报告，不改变构建行为 —— 让 CI 日志能直接回答这个问题。
+GKI_KCONFIG="$COMMON/init/Kconfig.gki"
+if [ -f "$GKI_KCONFIG" ]; then
+  if grep -q '^config GKI_DYNAMIC_TASK_STRUCT_SIZE' "$GKI_KCONFIG"; then
+    info "[ABI] 源码树含 GKI_DYNAMIC_TASK_STRUCT_SIZE（原厂 task_struct 布局可复刻）"
+  else
+    warn "[ABI] 源码树不含 GKI_DYNAMIC_TASK_STRUCT_SIZE"
+    warn "[ABI] 原厂 CONFIG_GKI_TASK_STRUCT_VENDOR_SIZE_MAX=1024 在这棵树上无法生效"
+  fi
+fi
+if [ -f "$COMMON/arch/Kconfig" ] && ! grep -q '^config ARCH_WANTS_DYNAMIC_TASK_STRUCT' "$COMMON/arch/Kconfig"; then
+  warn "[ABI] arch/Kconfig 里也没有 ARCH_WANTS_DYNAMIC_TASK_STRUCT"
+fi
+
+# ---------------------------------------------------------------------------
 log "阶段 2/6：校验源码版本"
 # ---------------------------------------------------------------------------
 WANT_SUB="${KERNEL_RELEASE##*.}"
@@ -382,16 +437,18 @@ log "阶段 5/6：写内核配置"
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # 基础配置来源（CONFIG_SOURCE）：
-#   gki —— ACK 自带的 arch/arm64/configs/gki_defconfig（**默认**）
-#   oem —— 原厂 boot.img 内嵌的 .config（configs/warsaw_defconfig）
+#   oem —— 原厂 boot.img 内嵌的 .config（configs/warsaw_defconfig），**默认**
+#   gki —— ACK 自带的 arch/arm64/configs/gki_defconfig（退路）
 #
-# 为什么默认改成 gki：实测 oem 配置 + 纯 ACK 源码编出来的内核，刷进去要么卡 logo、
-# 要么直接黑屏重启（`fastboot boot` 也一样），而用 gki_defconfig 编的同版本内核
-# 在这台机器上能正常进系统。原厂 .config 是配合厂商自己那棵树的，缺了他们的平台
-# 补丁时并不等价；gki_defconfig 才是 Google 为这个 KMI 验证过的那一份。
-# oem 保留成可选，等 gki 版先跑通、要做性能调优时再逐步回补。
+# 历史：oem 配置在「裸 make」路径下编出来的内核刷进去卡 logo（run24/25 实测），
+# 一度把默认改成 gki。但那条结论只证明了「oem 配置 + 裸 make」不行 ——
+# Error1015 那份实测能启动的内核同样是这个 KMI，而它走的是官方
+# `build/build.sh`（LTO=thin + build.config.gki.aarch64），不是裸 make。
+# 裸 make 少了 build.config 那一层预处理，产物形态和官方不一致。
+# 现在构建已切到官方路径（BUILD_ENGINE=script），oem 配置值得重新验一次 ——
+# 这是唯一能拿到「原厂行为 + 内嵌 root」的组合。
 # ---------------------------------------------------------------------------
-CONFIG_SOURCE="${CONFIG_SOURCE:-gki}"
+CONFIG_SOURCE="${CONFIG_SOURCE:-oem}"
 if [ "$CONFIG_SOURCE" = "oem" ]; then
   cp "$WS/configs/warsaw_defconfig" "$OUT/.config"
   info "基础配置：原厂 .config（取自 boot.img 内嵌 IKCONFIG）"

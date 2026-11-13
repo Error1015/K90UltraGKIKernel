@@ -21,10 +21,10 @@ on:
         options: [bakasu, all, diag, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
         default: bakasu
       config_source:
-        description: '内核基础配置：gki = ACK 自带 gki_defconfig（默认，已实测能起）；oem = 原厂 .config（需厂商树配套，当前会卡 logo）'
+        description: '内核基础配置：oem = 原厂 .config（默认，走官方 build/build.sh 路径重建，最接近原生）；gki = ACK 自带 gki_defconfig（退路，已实测能起）'
         type: choice
-        options: [gki, oem]
-        default: gki
+        options: [oem, gki]
+        default: oem
       susfs:
         description: 'SUSFS（选 kowsu 时会自动关掉）'
         type: boolean
@@ -189,8 +189,8 @@ jobs:
           path: |
             prepare.log
             build-step.log
-            kernel/out/build.log
-            kernel/out/olddefconfig.log
+            out/build.log
+            out/olddefconfig.log
           if-no-files-found: ignore
           compression-level: 9
 

@@ -78,7 +78,7 @@ def make_leg(root: str, *, name: str | None = None,
         "sigprotect": sigprotect if sigprotect is not None
                       else flag("SIGPROTECT_INPUT", default="true"),
         # 基础配置来源：gki（默认，= gki_defconfig）或 oem（原厂 .config）
-        "config": (os.environ.get("CONFIG_SOURCE_INPUT") or "gki").strip() or "gki",
+        "config": (os.environ.get("CONFIG_SOURCE_INPUT") or "oem").strip() or "oem",
     }
     for f in FEATURES:
         leg[f] = flag(f"{f.upper()}_INPUT") if features else "false"
