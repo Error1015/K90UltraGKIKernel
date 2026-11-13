@@ -142,7 +142,8 @@ jobs:
           set -euo pipefail
           grep -E '^[A-Z][A-Z0-9_]*=' project/device.env >> "$GITHUB_ENV"
           ( set -a; . project/device.env; set +a
-            echo "内核基准：$KERNEL_RELEASE / $KERNEL_TAG / $LOCALVERSION" )
+            # 版本串不在这里（device.env 里没有），由 lib.sh 从打包模板的原厂串推出
+            echo "内核基准：$KERNEL_RELEASE / $KERNEL_TAG / $MANIFEST_BRANCH" )
 
       - name: 清理磁盘
         run: |

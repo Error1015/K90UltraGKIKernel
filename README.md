@@ -185,6 +185,19 @@ Actions → Build K90 Ultra GKI → Run workflow
 换固件版本时重新生成模板即可（`python project/template.py <原厂 boot.img>`），
 模板里会带上那台机器的真实版本串。
 
+还有一个 Kbuild 陷阱：`scripts/setlocalversion` 的最后一行是
+
+```sh
+echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"
+```
+
+`CONFIG_LOCALVERSION` 和环境变量 `LOCALVERSION` 会被**各拼一次**。两个都带值就会出现
+`6.6.118-android15-8-warsaw-4k-android15-8-warsaw-4k` —— 这正好是第一次刷机卡 logo 的原因。
+
+所以 `build.sh` 在调用 make 前显式 `export LOCALVERSION=`（设为**空串**而不是 unset）：
+既让环境那份贡献为空，又因为「LOCALVERSION 已被设置」而跳过 `scm_version`，
+避免给打了补丁的脏树自动追加 `-dirty`。
+
 ---
 
 ## 四、刷入

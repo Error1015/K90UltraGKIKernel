@@ -29,6 +29,22 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
 fi
 info "工具链：$(clang --version | head -1)"
 
+# ---------------------------------------------------------------------------
+# 把环境里的 LOCALVERSION 清空（注意是"设为空"，不是 unset）。
+#
+# scripts/setlocalversion 的最后一行是：
+#   ${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}
+# 也就是说 CONFIG_LOCALVERSION 和环境变量 LOCALVERSION 会被**各拼一次**。
+# 两个都带值 → 版本串出现两遍：
+#   6.6.118-android15-8-warsaw-4k-android15-8-warsaw-4k
+# 厂商模块按 vermagic 整串比对，立刻全部拒绝加载 → 卡 logo。
+#
+# 置空还有第二个作用：脚本里逻辑是「LOCALVERSION 一旦被设置（哪怕是空串），
+# 就不再去跑 scm_version」。我们打了 SUSFS/BBR 等补丁，源码树是脏的，
+# unset 的话会自动追加 -dirty，同样对不上。
+# ---------------------------------------------------------------------------
+export LOCALVERSION=
+
 export ARCH=arm64
 export LLVM=1
 export KBUILD_BUILD_USER=kleaf
