@@ -285,8 +285,8 @@ if is_true "$NETWORKING"; then
   else
     warn "BBRv3 补丁不适用，回退到内核自带 BBR（功能不受影响，只是算法版本不同）"
     echo "BBRV3_APPLIED=false" >> "${GITHUB_ENV:-/dev/null}"
-    # 回退时不要让默认拥塞控制指向不存在的算法
-    sed -i '/^CONFIG_DEFAULT_TCP_CONG=/d' "$WS/configs/features/networking.fragment"
+    # "bbr" 这个算法本身出厂就有（CONFIG_TCP_CONG_BBR=y），回退时不用改默认拥塞控制，
+    # 也绝对不要去改仓库里的配置文件 —— 那会让工作区变脏、结果不可复现。
   fi
 fi
 

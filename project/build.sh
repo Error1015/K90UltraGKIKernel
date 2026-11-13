@@ -51,7 +51,11 @@ is_true "${NTSYNC:-false}"      && require_cfg NTSYNC y
 is_true "${NOMOUNT:-false}"     && require_cfg NOMOUNT y
 is_true "${BBG:-false}"         && require_cfg BBG y
 is_true "${DROIDSPACES:-false}" && require_cfg USER_NS y
-is_true "${NETWORKING:-false}"  && require_cfg IP_SET y
+if is_true "${NETWORKING:-false}"; then
+  require_cfg IP_SET y
+  require_cfg CIFS y
+  require_cfg DEFAULT_TCP_CONG bbr
+fi
 is_true "${BPF:-false}"         && require_cfg FUSE_BPF y
 
 require_cfg ARM64_4K_PAGES y
