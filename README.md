@@ -164,6 +164,7 @@ Actions → Build K90 Ultra GKI → Run workflow
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `root` | `bakasu` | 可选 `bakasu` / `sukisu-ultra` / `kernelsu` / `kernelsu-next` / `kowsu` / `none` |
+| `config_source` | `gki` | `gki` = ACK 自带 `gki_defconfig`（**已实测能启动**）；`oem` = 原厂 `.config`（配合厂商那棵树，纯 ACK 源码下会卡 logo，仅作对照） |
 | `susfs` | `true` | 需要 root 不为 none；kowsu 会自动关掉 |
 | `nomount` / `bbg` / `ntsync` / `networking` / `bpf` / `droidspaces` / `unicode` | `false` | 附加功能，见上一节 |
 | `release` | `release` | `release` / `prerelease` / `none`（只留 Artifacts） |

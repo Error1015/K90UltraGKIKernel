@@ -108,14 +108,23 @@ require_cfg MODVERSIONS y
 require_cfg TRIM_UNUSED_KSYMS n
 require_cfg IKCONFIG y
 
-# 这几项是 ABI 敏感项，与出厂不一致时只告警不中断（KMI 判定看的是符号 CRC）
-require_cfg CFI_CLANG y
-if is_true "${SIGPROTECT:-true}"; then
-  require_cfg MODULE_SIG_PROTECT y
+# 这几项是 ABI 敏感项。oem 配置下必须与出厂一致；gki_defconfig 下它们的取值
+# 由 Google 的 KMI 决定，与厂商配置本来就可能不同，所以只打印不中断。
+if [ "${CONFIG_SOURCE:-gki}" = "oem" ]; then
+  require_cfg CFI_CLANG y
+  if is_true "${SIGPROTECT:-true}"; then
+    require_cfg MODULE_SIG_PROTECT y
+  else
+    require_cfg MODULE_SIG_PROTECT n
+  fi
+  require_cfg KALLSYMS_ALL y
 else
-  require_cfg MODULE_SIG_PROTECT n
+  for k in CFI_CLANG MODULE_SIG_PROTECT KALLSYMS_ALL; do
+    v="$(sed -n "s/^CONFIG_${k}=//p" "$OUT/.config" | head -1)"
+    [ -n "$v" ] || v="n（未设置）"
+    info "[info] CONFIG_${k} = ${v}"
+  done
 fi
-require_cfg KALLSYMS_ALL y
 
 LOCALVER="$(sed -n 's/^CONFIG_LOCALVERSION="\(.*\)"$/\1/p' "$OUT/.config")"
 info "LOCALVERSION = $LOCALVER"

@@ -20,6 +20,11 @@ on:
         type: choice
         options: [bakasu, all, diag, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
         default: bakasu
+      config_source:
+        description: '内核基础配置：gki = ACK 自带 gki_defconfig（默认，已实测能起）；oem = 原厂 .config（需厂商树配套，当前会卡 logo）'
+        type: choice
+        options: [gki, oem]
+        default: gki
       susfs:
         description: 'SUSFS（选 kowsu 时会自动关掉）'
         type: boolean
@@ -93,6 +98,7 @@ jobs:
         env:
           ROOT_INPUT: ${{ inputs.root }}
           SUSFS_INPUT: ${{ inputs.susfs }}
+          CONFIG_SOURCE_INPUT: ${{ inputs.config_source }}
           NOMOUNT_INPUT: ${{ inputs.nomount }}
           BBG_INPUT: ${{ inputs.bbg }}
           NTSYNC_INPUT: ${{ inputs.ntsync }}
@@ -122,6 +128,7 @@ jobs:
       ROOT_IMPL: ${{ matrix.root }}
       SUSFS: ${{ matrix.susfs }}
       SIGPROTECT: ${{ matrix.sigprotect }}
+      CONFIG_SOURCE: ${{ matrix.config }}
       NOMOUNT: ${{ matrix.nomount }}
       BBG: ${{ matrix.bbg }}
       NTSYNC: ${{ matrix.ntsync }}

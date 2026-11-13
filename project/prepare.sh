@@ -380,8 +380,28 @@ fi
 # ---------------------------------------------------------------------------
 log "阶段 5/6：写内核配置"
 # ---------------------------------------------------------------------------
-cp "$WS/configs/warsaw_defconfig" "$OUT/.config"
-info "基础配置：原厂 .config（取自 boot.img 内嵌 IKCONFIG）"
+# ---------------------------------------------------------------------------
+# 基础配置来源（CONFIG_SOURCE）：
+#   gki —— ACK 自带的 arch/arm64/configs/gki_defconfig（**默认**）
+#   oem —— 原厂 boot.img 内嵌的 .config（configs/warsaw_defconfig）
+#
+# 为什么默认改成 gki：实测 oem 配置 + 纯 ACK 源码编出来的内核，刷进去要么卡 logo、
+# 要么直接黑屏重启（`fastboot boot` 也一样），而用 gki_defconfig 编的同版本内核
+# 在这台机器上能正常进系统。原厂 .config 是配合厂商自己那棵树的，缺了他们的平台
+# 补丁时并不等价；gki_defconfig 才是 Google 为这个 KMI 验证过的那一份。
+# oem 保留成可选，等 gki 版先跑通、要做性能调优时再逐步回补。
+# ---------------------------------------------------------------------------
+CONFIG_SOURCE="${CONFIG_SOURCE:-gki}"
+if [ "$CONFIG_SOURCE" = "oem" ]; then
+  cp "$WS/configs/warsaw_defconfig" "$OUT/.config"
+  info "基础配置：原厂 .config（取自 boot.img 内嵌 IKCONFIG）"
+else
+  GKIDEF="$COMMON/arch/arm64/configs/gki_defconfig"
+  [ -f "$GKIDEF" ] || die "找不到 gki_defconfig: $GKIDEF"
+  cp "$GKIDEF" "$OUT/.config"
+  info "基础配置：gki_defconfig（$GKIDEF）"
+  echo "CONFIG_SOURCE=gki" >> "${GITHUB_ENV:-/dev/null}"
+fi
 
 apply_fragment "$WS/configs/base.fragment"
 set_cfg LOCALVERSION "$LOCALVERSION"

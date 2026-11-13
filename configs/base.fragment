@@ -19,3 +19,11 @@ CONFIG_KALLSYMS_ALL=y
 # firmware/boot-template.json 的原厂版本串推出，再整段写进 CONFIG_LOCALVERSION。
 # 厂商模块按 vermagic 整串比对，任何多余的追加都会让它们全部加载失败。
 CONFIG_LOCALVERSION_AUTO=n
+
+# ---------------------------------------------------------------------------
+# 基础配置默认来自 gki_defconfig（见 prepare.sh 的 CONFIG_SOURCE）。
+# gki_defconfig 不带下面这些，但验收 / 功能需要，显式补上。
+# ---------------------------------------------------------------------------
+# 验收脚本要从 Image 里解出 .config 做回读比对
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
