@@ -135,6 +135,72 @@ retry 2 sync_once || die "repo sync 失败（googlesource 限速时重跑即可�
 [ -f "$COMMON/Makefile" ] || die "同步后找不到 $COMMON/Makefile"
 
 # ---------------------------------------------------------------------------
+log "阶段 1a/6：确认 build/ 项目"
+# ---------------------------------------------------------------------------
+# 官方构建入口是 kernel/build 里的 build/build.sh：
+#   LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
+# 但 common-android15-6.6-lts 这个 manifest 分支只保证 common + prebuilts，
+# build 项目不一定跟着下来。缺了它就跑不了官方路径，所以这里兜底单拉一份。
+BUILD_DIR="$KROOT/build"
+if [ ! -f "$BUILD_DIR/build.sh" ]; then
+  # 先按 manifest 里的定义同步 —— 它带的 revision 与 common 最匹配
+  info "尝试按 manifest 定义同步 build 项目"
+  if timeout 300 repo sync -c --current-branch --no-tags -j"$(nproc)" build < /dev/null > /dev/null 2>&1; then
+    [ -f "$BUILD_DIR/build.sh" ] && info "build 项目已按 manifest 同步"
+  fi
+fi
+if [ ! -f "$BUILD_DIR/build.sh" ]; then
+  warn "缺少 $BUILD_DIR/build.sh，单独拉取 kernel/build"
+  for br in "common-${ANDROID_BRANCH}" "${ANDROID_BRANCH}" "common-${MANIFEST_BRANCH#common-}" main; do
+    rm -rf "$KROOT/build.tmp"
+    info "尝试分支 $br"
+    if retry 2 git clone --depth 1 -b "$br" \
+         https://android.googlesource.com/kernel/build "$KROOT/build.tmp" < /dev/null; then
+      rm -rf "$BUILD_DIR"
+      mv "$KROOT/build.tmp" "$BUILD_DIR"
+      info "kernel/build 已就绪（分支 $br）"
+      break
+    fi
+    warn "分支 $br 拉取失败"
+  done
+  rm -rf "$KROOT/build.tmp"
+fi
+[ -f "$BUILD_DIR/build.sh" ] \
+  || die "仍然没有 $BUILD_DIR/build.sh，无法使用官方 build/build.sh"
+info "build.sh : $BUILD_DIR/build.sh"
+
+# 官方 build.sh 除了 clang 还要这几样；缺了会在十几分钟后才报错，先看一眼
+for p in prebuilts/clang/host/linux-x86 \
+         prebuilts/build-tools/linux-x86/bin \
+         prebuilts/gas/linux-x86; do
+  if [ -e "$KROOT/$p" ]; then
+    info "[prebuilts] $p ✓"
+  else
+    warn "[prebuilts] 缺 $p —— build.sh 可能中途失败"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# build.config.constants 里写死的 CLANG_VERSION 必须和实际拉到的 prebuilts 对得上。
+# 兜底 clone 的若是 main 分支，它指向的 clang 版本可能比 prebuilts 里的新，
+# build.sh 会直接找不到编译器。这里改成实际存在的那个。
+# ---------------------------------------------------------------------------
+CONST="$BUILD_DIR/build.config.constants"
+CLANG_ROOT="$KROOT/prebuilts/clang/host/linux-x86"
+if [ -f "$CONST" ]; then
+  WANT_CC="$(sed -n 's/^CLANG_VERSION=//p' "$CONST" | head -1 | tr -d "\"[:space:]")"
+  HAVE_CC="$(ls -1 "$CLANG_ROOT" 2>/dev/null | grep -E '^clang-r[0-9]+$' | sort -V | tail -1)"
+  if [ -n "$WANT_CC" ] && [ -n "$HAVE_CC" ] && [ "$WANT_CC" != "$HAVE_CC" ]; then
+    if [ -d "$CLANG_ROOT/$WANT_CC" ]; then
+      info "clang: $WANT_CC（build.config 与 prebuilts 一致）"
+    else
+      warn "build.config 要 $WANT_CC，prebuilts 只有 $HAVE_CC —— 改用后者"
+      sed -i "s|^CLANG_VERSION=.*|CLANG_VERSION=$HAVE_CC|" "$CONST"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 log "阶段 1b/6：切到原厂内核 commit"
 # ---------------------------------------------------------------------------
 # repo sync 拿到的只是 manifest 指向的 revision（我们钉的 tag）。
