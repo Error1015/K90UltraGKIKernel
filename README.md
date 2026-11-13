@@ -75,14 +75,17 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 
 ### 产物
 
-一次运行出两份（矩阵并行，互不影响）：
+默认一次只出**一个**包（你选的那个 root），不多跑对照 job；要一次出齐就选 `root=all`。
+所有产物发到**同一个 Release** —— 一条 tag、一个页面，不用到处找。
 
-| 包 | 内容 | 用途 |
-| --- | --- | --- |
-| `boot-warsaw-vanilla-6.6.118.img` | 纯内核，不带 root、不带功能 | 先证明内核本身能起 |
-| `boot-warsaw-<root>-6.6.118.img` | 选定 root（默认 bakasu）+ SUSFS + 勾选的附加功能 | 日常使用 |
+| `root` 输入 | 产出 |
+| --- | --- |
+| `bakasu`（默认） | `boot-warsaw-bakasu-6.6.118.img` |
+| 指定某一个管理器 | `boot-warsaw-<管理器>-6.6.118.img` |
+| `all` | 5 个包（bakasu / sukisu-ultra / kernelsu / kernelsu-next / kowsu），一个 job 一个，并行 |
+| `none` | `boot-warsaw-none-6.6.118.img`，纯内核（排查用） |
 
-两份都是 96MB 完整分区镜像，**没有 zip，不要用 recovery 刷**。
+都是 96MB 完整分区镜像，**没有 zip，不要用 recovery 刷**。
 
 ### root 支持情况
 
@@ -93,7 +96,8 @@ project/verify.py    结构 / 版本串 / 内嵌配置三重验收，任何一�
 | `kernelsu` | 支持 | tiann 原版，SUSFS 需要 susfs4ksu 的 `10_enable_susfs_for_ksu.patch`（自动打） |
 | `kernelsu-next` | 支持 | 默认分支 `dev`；顺带修掉它 Kbuild 在 mrproper 阶段就 `$(error)` 的坑 |
 | `kowsu` | 支持 | **与 SUSFS 不兼容**，勾了 SUSFS 会自动关掉并提示 |
-| `none` | 支持 | 纯内核，等价于只要 vanilla 那份 |
+| `all` | 支持 | 一次跑完上面 5 个，产物各一份、发布到同一个 Release |
+| `none` | 支持 | 纯内核，不带 root（排查内核/打包问题用） |
 
 SUSFS 胶水是运行时探测的：先看 root 仓库自己的 `Kconfig` 里有没有 `config KSU_SUSFS`，
 有就不动，没有才打对应的使能补丁 —— 这样各家版本升级不会一次把流水线卡死。
@@ -123,7 +127,7 @@ Actions → Build K90 Ultra GKI → Run workflow
 ```
 
 默认参数（`kernel_release=6.6.118`、`root=bakasu`、`susfs=true`）直接跑即可，
-约 20~35 分钟（矩阵两个 job 并行）。
+约 15~25 分钟；选 `root=all` 时 5 个 job 并行，墙钟时间差不多（各自独立 sync + 编译）。
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
@@ -185,7 +189,7 @@ fastboot boot boot-warsaw-sukisu-6.6.118.img   # 只在内存里起一次，重�
 | 症状 | 先看这里 |
 | --- | --- |
 | 卡 logo 不动 | `init_boot` 是否还是 LKM 版（`bash tools/check-device.sh`，只读） |
-| 卡 logo，但 init_boot 已回原厂 | 刷 vanilla 那份；还卡就是打包/刷写问题，不是 root 的问题 |
+| 卡 logo，但 init_boot 已回原厂 | 换成 `root=none` 跑一份：还卡就是打包/刷写问题，不是 root 的问题 |
 | 能进系统但相机/WiFi 没了 | `adb shell dmesg \| grep -iE "disagrees about version\|version magic"` → 符号 CRC 不匹配，源码版本没锁对 |
 | 想拿上一轮失败的内核日志 | `bash tools/get-last-log.sh`（时序：刷→卡住→重启进原系统→立刻跑） |
 
@@ -196,7 +200,7 @@ fastboot boot boot-warsaw-sukisu-6.6.118.img   # 只在内存里起一次，重�
 ## 六、目录
 
 ```
-.github/workflows/build.yml   唯一构建入口（vanilla + 选定 root 两条并行）
+.github/workflows/build.yml   唯一构建入口（选定 root 一条，或 root=all 出 5 条；最后合并成一个 Release）
 project/
   prepare.sh                  同步源码 + 锁版本 + 集成 root/SUSFS/附加功能 + 写配置
   build.sh                    make Image + 配置回读 + 产物自检
@@ -242,14 +246,14 @@ python project/template.py stock_boot.img          # 重新生成 firmware/boot-
 补丁越多，"内核活着但 Android 起不来"的概率越高。建议一次只加一层，每层都能开机再往下走：
 
 ```
-① vanilla（root=none）                 → 证明内核 + 打包没问题
+① root=none（纯内核）                  → 证明内核 + 打包没问题
 ② root=bakasu，susfs=true              → 证明 root 方案可用
 ③ 单个附加功能（先 networking 或 ntsync，它们只碰 net / 内核内部）
 ④ 最后再上 nomount / bbg               → 这两个要改 VFS 与块设备层，风险最高
 ```
 
-任何一层起不来，就把那一层关掉重跑 —— 因为矩阵里永远有 vanilla 那份做对照，
-能立刻区分"是内核/打包的问题"还是"某个补丁的问题"。
+任何一层起不来，就把那一层关掉重跑。怀疑是内核或打包的问题时，单独跑一次 `root=none`
+做对照 —— 它还能开机就说明问题一定在补丁或 root 侧。
 
 ---
 

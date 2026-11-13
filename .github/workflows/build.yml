@@ -21,9 +21,9 @@ on:
         required: false
         default: ''
       root:
-        description: 'root 实现（默认 BakaSU）'
+        description: 'root 实现（bakasu 单个 / all 一次出全部 5 个）'
         type: choice
-        options: [bakasu, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
+        options: [bakasu, all, sukisu-ultra, kernelsu, kernelsu-next, kowsu, none]
         default: bakasu
       susfs:
         description: 'SUSFS（选 kowsu 时会自动关掉）'
@@ -207,21 +207,6 @@ jobs:
           path: patch-rejects/
           if-no-files-found: ignore
 
-      - name: 发布 Release
-        if: ${{ inputs.release != 'none' && success() }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: warsaw-${{ matrix.name }}-${{ inputs.kernel_release }}-${{ github.run_number }}
-          name: K90 Ultra ${{ matrix.name }} (${{ inputs.kernel_release }})
-          body_path: dist/build-info-${{ matrix.name }}.md
-          files: |
-            dist/*.img
-            dist/Image
-            dist/build-info-*.md
-          prerelease: ${{ inputs.release == 'prerelease' }}
-          make_latest: false
-          fail_on_unmatched_files: false
-
       - name: 运行摘要
         if: always()
         shell: bash
@@ -243,3 +228,76 @@ jobs:
               cat "dist/build-info-${{ matrix.name }}.md"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 所有包发到同一个 Release：一条 tag、一个页面，下载不用到处找。
+  # needs 里带上 build 但用 always()，这样某个管理器编挂了也不影响其它包发布。
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish release
+    needs: [resolve, build]
+    if: ${{ always() && inputs.release != 'none' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载本次构建的全部产物
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: boot-warsaw-*
+          path: dist
+
+      - name: 汇总发布说明
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          imgs=(dist/*/*.img)
+          echo "count=${#imgs[@]}" >> "$GITHUB_OUTPUT"
+          echo "共 ${#imgs[@]} 个包"
+
+          {
+            echo "# K90 Ultra (warsaw) GKI — ${{ inputs.kernel_release }}"
+            echo
+            echo "一次运行构建的全部产物：同一份源码、同一份配置，只有 root 不同。"
+            echo "刷哪个就装哪个的管理器 APK，详见下方各包说明。"
+            echo
+            echo "| 包 | 大小 |"
+            echo "| --- | --- |"
+          } > dist/RELEASE.md
+
+          for f in "${imgs[@]}"; do
+            echo "| \`$(basename "$f")\` | $(stat -c %s "$f") 字节 |" >> dist/RELEASE.md
+          done
+
+          echo >> dist/RELEASE.md
+          for f in dist/*/build-info-*.md; do
+            [ -f "$f" ] || continue
+            echo "---" >> dist/RELEASE.md
+            cat "$f" >> dist/RELEASE.md
+            echo >> dist/RELEASE.md
+          done
+
+          cat dist/RELEASE.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 创建 Release
+        if: steps.collect.outputs.count != '0'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: warsaw-${{ inputs.kernel_release }}-${{ github.run_number }}
+          name: K90 Ultra GKI ${{ inputs.kernel_release }} (run ${{ github.run_number }})
+          body_path: dist/RELEASE.md
+          files: |
+            dist/*/*.img
+            dist/*/build-info-*.md
+            dist/*/kernel-version.txt
+          prerelease: ${{ inputs.release == 'prerelease' }}
+          make_latest: false
+          fail_on_unmatched_files: false
+
+      - name: 没有产物可发布
+        if: steps.collect.outputs.count == '0'
+        shell: bash
+        run: |
+          echo "::warning::所有矩阵任务都失败了，本次不创建 Release"
+          exit 0
