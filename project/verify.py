@@ -56,6 +56,12 @@ def features_text() -> str:
     return "、".join(f"`{x}`" for x in on) if on else "无（全部关闭）"
 
 
+def sigprotect_wanted() -> str:
+    """CONFIG_MODULE_SIG_PROTECT 的期望值：默认 y，只有诊断腿会显式关掉。"""
+    raw = os.environ.get("SIGPROTECT", "").strip().lower()
+    return "n" if raw in ("0", "false", "no", "off") else "y"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--boot", required=True)
@@ -114,7 +120,9 @@ def main() -> int:
             ("CONFIG_ARM64_4K_PAGES", "y"),
             ("CONFIG_MODVERSIONS", "y"),
             ("CONFIG_TRIM_UNUSED_KSYMS", "n"),
-            ("CONFIG_MODULE_SIG_PROTECT", "y"),
+            # 诊断分支会故意关掉模块签名保护（root=diag 的 vanilla-nosig），
+            # 所以这里按实际请求的方向校验，而不是写死 y。
+            ("CONFIG_MODULE_SIG_PROTECT", sigprotect_wanted()),
             ("CONFIG_CFI_CLANG", "y"),
         ]
         if args.root != "none":
@@ -149,6 +157,9 @@ def main() -> int:
         if args.root != "none":
             fh.write(f"- SUSFS：`{'on' if susfs else 'off'}`\n")
         fh.write(f"- 附加功能：{features_text()}\n")
+        if sigprotect_wanted() == "n":
+            fh.write("- 模块签名保护：`off`（`CONFIG_MODULE_SIG_PROTECT=n`，"
+                     "用于放行非本次构建密钥签名的厂商模块）\n")
         fh.write(f"- boot.img 大小：{len(boot)} 字节（= 分区大小，含 vbmeta + 原厂 AVB 尾部 + footer）\n")
         fh.write(f"- 内核 Image：{len(image)} 字节\n")
         fh.write(f"- 源码：ACK `android15-6.6` @ `6.6.{args.sublevel}`\n\n")
