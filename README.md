@@ -140,7 +140,7 @@ Actions → Build K90 Ultra GKI → Run workflow
 默认参数（`root=bakasu`、`susfs=true`）直接跑即可，约 15~25 分钟；
 选 `root=all` 时 5 个 job 并行，墙钟时间差不多（各自独立 sync + 编译）。
 
-**内核版本、tag、版本串、页大小、分区大小全部锁死在 `project/device.env`，不是参数。**
+**内核版本、tag、页大小、分区大小锁死在 `project/device.env`，版本串由打包模板推导 —— 都不是参数。**
 这个仓库只服务 warsaw 一台机器，把版本做成输入只会多一个填错的机会
 （填错的表现是能出包、刷进去 vendor 模块全部 `unknown symbol`）。
 
@@ -160,11 +160,30 @@ Actions → Build K90 Ultra GKI → Run workflow
 | 内核版本 | `6.6.118`（必须与手机 `uname -r` 一致） |
 | ACK tag | `android15-6.6.118_r00`（写死，不再每次去 googlesource 解析） |
 | 源码分支 | `android15-6.6` / manifest `common-android15-6.6-lts` |
-| 版本串 | `-android15-8-warsaw-4k`（`-android15-8` 是 KMI 标识，别动） |
+| 版本串 | 由 `firmware/boot-template.json` 的 `stock_kernel_version` 推出，必须与原厂**逐字节**一致（见下） |
 | 页大小 / 分区 | `4096` / `100663296`（96MB） |
 
 这些值在 `lib.sh` 里以普通赋值覆盖环境变量，**从外部传同名变量不会生效**。
 真要换机型或换内核，改这个文件，并在 PR 里说明。
+
+### 为什么版本串必须一字不差
+
+厂商模块（`vendor_boot` / `init_boot` / `vendor_dlkm` 里的那些）加载时，内核会比对整串 vermagic：
+
+```
+6.6.118-android15-8-g0908354dac1b-ab16143355-4k SMP preempt mod_unload modversions aarch64
+└──────────────── UTS_RELEASE ────────────────┘
+```
+
+差一个字符 → 报 `version magic '...' should be '...'` → 该模块直接拒绝加载。
+存储、显示这些早期模块一挂，内核其实起来了，但用户空间永远接不上手 —— 表现就是**卡在 logo**。
+
+所以这个串不手写：`lib.sh` 从 `firmware/boot-template.json` 的 `stock_kernel_version`
+里去掉 `KERNEL_RELEASE` 前缀，剩下的整段塞进 `CONFIG_LOCALVERSION`；
+`build.sh` 编完再从 `Image` 里读出真实版本串，与原厂值比对，不一致直接中断（不出包）。
+
+换固件版本时重新生成模板即可（`python project/template.py <原厂 boot.img>`），
+模板里会带上那台机器的真实版本串。
 
 ---
 

@@ -22,6 +22,33 @@ fi
 # shellcheck disable=SC1090
 . "$DEVICE_ENV"
 
+# ---------------------------------------------------------------------------
+# 版本串必须与原厂逐字节一致。
+#
+# 厂商模块（vendor_boot / init_boot / vendor_dlkm 里那些）在加载时会比对整串
+#   vermagic = UTS_RELEASE + " SMP preempt mod_unload modversions aarch64"
+# 少一段或多一段都会被拒绝，报 "version magic '...' should be '...'"。
+# 存储、显示这些早期模块一挂，内核就停在 logo 上，看起来像"没起来"。
+#
+# 所以这个串不手写 —— 从打包模板里记的原厂版本串直接推出来：
+#   6.6.118-android15-8-g0908354dac1b-ab16143355-4k
+#   └─ KERNEL_RELEASE ─┘└──────── LOCALVERSION ────────┘
+# ---------------------------------------------------------------------------
+STOCK_VERSION="$(sed -n 's/.*"stock_kernel_version": *"\([^"]*\)".*/\1/p' \
+                 "$WS/firmware/boot-template.json" 2>/dev/null | head -1)"
+if [ -z "$STOCK_VERSION" ]; then
+  printf '\033[1;31m[x] 无法从 firmware/boot-template.json 读出原厂内核版本串\033[0m\n' >&2
+  exit 1
+fi
+case "$STOCK_VERSION" in
+  "$KERNEL_RELEASE"*)
+    LOCALVERSION="${STOCK_VERSION#"$KERNEL_RELEASE"}" ;;
+  *)
+    printf '\033[1;31m[x] 模板版本串 %s 与 KERNEL_RELEASE %s 对不上\033[0m\n' \
+      "$STOCK_VERSION" "$KERNEL_RELEASE" >&2
+    exit 1 ;;
+esac
+
 KROOT="$WS/kernel"        # repo sync 出来的 kernel_platform 根
 COMMON="$KROOT/common"    # GKI 通用内核源码（真正的内核树）
 OUT="$WS/out"             # O= 构建目录

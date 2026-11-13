@@ -15,5 +15,7 @@ CONFIG_TRIM_UNUSED_KSYMS=n
 # SUSFS / metamodule 需要完整 kallsyms（原厂已是 y，这里显式声明防止被覆盖）
 CONFIG_KALLSYMS_ALL=y
 
-# 版本串里不要再自动追加 -g<sha> / 脏标记（只影响字符串，不影响 ABI）
+# 版本串不要自动追加 -g<sha> / -dirty：整套后缀由 project/lib.sh 从
+# firmware/boot-template.json 的原厂版本串推出，再整段写进 CONFIG_LOCALVERSION。
+# 厂商模块按 vermagic 整串比对，任何多余的追加都会让它们全部加载失败。
 CONFIG_LOCALVERSION_AUTO=n

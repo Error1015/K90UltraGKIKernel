@@ -165,8 +165,21 @@ MAGIC="$(dd if="$IMG" bs=1 skip=56 count=4 status=none | od -An -tx1 | tr -d ' \
 info "ARM64 头   : ARMd"
 
 VERSION_STR="$(strings -a "$IMG" | grep -m1 -E '^Linux version ' || true)"
-info "版本串     : ${VERSION_STR:-未找到}"
 echo "$VERSION_STR" > "$DIST/kernel-version.txt"
+
+# 版本串必须与原厂一字不差。
+# 厂商模块的有效性靠 vermagic 整串比对（UTS_RELEASE + SMP/preempt/modversions/arch），
+# 差一个字符就会被拒绝加载 —— 存储/显示的早期模块一挂，就是"卡在 logo 起不来"。
+REL_STR="${VERSION_STR#Linux version }"
+REL_STR="${REL_STR%% *}"
+if [ "$REL_STR" != "$STOCK_VERSION" ]; then
+  die "内核版本串与原厂不一致，厂商模块会全部拒绝加载（卡 logo）：
+    期望 : $STOCK_VERSION
+    实际 : ${REL_STR:-没取到版本串}
+  检查 project/device.env 的 KERNEL_RELEASE、configs/base.fragment 的 LOCALVERSION_AUTO，
+  以及 firmware/boot-template.json 是否来自当前这台手机的同版本固件。"
+fi
+info "版本串     : $REL_STR（与原厂一致 → vermagic 可匹配）"
 
 # Image 不能大到把 vbmeta 挤出 boot 分区（96MB）
 PART_SIZE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["partition_size"])' \
