@@ -69,7 +69,16 @@ fi
 # 附加功能：勾了就必须在最终配置里（符号来自各自的 Kconfig，缺了说明补丁没真正生效）
 is_true "${NTSYNC:-false}"      && require_cfg NTSYNC y
 is_true "${NOMOUNT:-false}"     && require_cfg NOMOUNT y
-is_true "${BBG:-false}"         && require_cfg BBG y
+is_true "${BBG:-false}"         && {
+  require_cfg BBG y
+  # BBG 的 Makefile 只认 CONFIG_LSM 里有没有 baseband_guard，缺了直接 $(error)。
+  # 在这里先拦住，别等编译到 security/ 才停（那是 15 分钟之后）。
+  LSM_VAL="$(sed -n 's/^CONFIG_LSM="\(.*\)"$/\1/p' "$OUT/.config" | head -1)"
+  case ",$LSM_VAL," in
+    *,baseband_guard,*) info "[OK] CONFIG_LSM 含 baseband_guard" ;;
+    *) die "CONFIG_LSM=\"$LSM_VAL\" 里没有 baseband_guard（BBG 的 Makefile 会 Stop）" ;;
+  esac
+}
 is_true "${DROIDSPACES:-false}" && require_cfg USER_NS y
 if is_true "${NETWORKING:-false}"; then
   require_cfg IP_SET y

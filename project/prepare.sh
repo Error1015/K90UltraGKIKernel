@@ -382,11 +382,9 @@ if is_true "$BBG"; then
   log "附加功能：Baseband Guard"
   run_remote_setup "https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh" "$KROOT"
   [ -d "$COMMON/security/baseband-guard" ] || die "BBG 安装后找不到 security/baseband-guard"
-  # 把 baseband_guard 排进默认 LSM 顺序（已包含则不动）
-  sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' \
-    "$COMMON/security/Kconfig"
-  grep -q 'baseband_guard' "$COMMON/security/Kconfig" \
-    || warn "security/Kconfig 里没找到 baseband_guard，请检查上游 setup.sh 是否改过路径"
+  # 注意：LSM 顺序不能在这里改 security/Kconfig。
+  # 厂配 .config 里 CONFIG_LSM 是显式字符串，Kconfig 的 default 根本不参与推导，
+  # 改了也不生效（BBG 的 Makefile 会直接 Stop）。真正的修改在"阶段 5：写内核配置"。
 fi
 
 # ---------------------------------------------------------------------------
@@ -409,6 +407,33 @@ if is_true "$NOMOUNT";     then info "--- NoMount ---";     apply_fragment "$WS/
 if is_true "$BBG";         then info "--- BBG ---";         apply_fragment "$WS/configs/features/bbg.fragment"; fi
 if is_true "$DROIDSPACES"; then info "--- DroidSpaces ---"; apply_fragment "$WS/configs/features/droidspaces.fragment"; fi
 if is_true "$BPF";         then info "--- BTF/eBPF ---";    apply_fragment "$WS/configs/features/bpf.fragment"; fi
+
+# ---------------------------------------------------------------------------
+# BBG 的 Makefile 在编译期硬校验：CONFIG_BBG=y 时 CONFIG_LSM 里必须有 baseband_guard，
+# 否则直接 $(error) "Please follow Baseband-guard's README.md" 然后 Stop。
+# 而厂配 .config 里 CONFIG_LSM 是显式字符串（不是 Kconfig 的 default），
+# 改 security/Kconfig 完全不参与推导 —— 只能在 .config 里改。
+# ---------------------------------------------------------------------------
+if is_true "$BBG"; then
+  LSM_OLD="$(sed -n 's/^CONFIG_LSM="\(.*\)"$/\1/p' "$OUT/.config" | head -1)"
+  if printf ',%s,' "$LSM_OLD" | grep -q ',baseband_guard,'; then
+    info "CONFIG_LSM 已含 baseband_guard：$LSM_OLD"
+  else
+    # 排在 selinux 之后：BBG 需要 selinux 侧的 cred/state，放在它后面最稳
+    if [ -z "$LSM_OLD" ]; then
+      warn "CONFIG_LSM 是空的，用完整默认顺序兜底"
+      LSM_NEW="landlock,lockdown,yama,loadpin,safesetid,selinux,baseband_guard,smack,tomoyo,apparmor,bpf"
+    else
+      LSM_NEW="$(printf '%s' "$LSM_OLD" \
+        | sed 's/\(^\|,\)selinux\(,\|$\)/\1selinux,baseband_guard\2/')"
+      if [ "$LSM_NEW" = "$LSM_OLD" ]; then
+        LSM_NEW="$LSM_OLD,baseband_guard"
+      fi
+    fi
+    set_cfg LSM "$LSM_NEW"
+    info "CONFIG_LSM += baseband_guard"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 log "阶段 6/6：准备构建环境"
