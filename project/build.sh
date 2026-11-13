@@ -143,7 +143,26 @@ if [ "$BUILD_ENGINE" = "script" ]; then
 #   POST_DEFCONFIG_CMDS 以及 KMI 相关的预处理，产物才是官方验证过的形态。
 # ===========================================================================
 BUILD_SH="$KROOT/build/build.sh"
-[ -f "$BUILD_SH" ] || die "找不到 $BUILD_SH —— manifest 没同步 build/ 项目？"
+KLEAF_BIN="$KROOT/tools/bazel"
+
+# 入口探测：Android 13 起官方主路径是 Kleaf（tools/bazel），build.sh 在新
+# 分支里已经删了。两条都可能，谁在就用谁。
+if [ ! -f "$BUILD_SH" ] && [ ! -x "$KLEAF_BIN" ]; then
+  warn "构建入口探测失败 —— 把拿到的东西打出来，便于定位"
+  info "KROOT = $KROOT"
+  ls -1 "$KROOT" 2>/dev/null | head -30 | sed 's/^/      /'
+  MF="$KROOT/.repo/manifests/default.xml"
+  if [ -f "$MF" ]; then
+    info "manifest 里的项目："
+    grep -oE 'path="[^"]*"' "$MF" 2>/dev/null | head -30 | sed 's/^/      /'
+  fi
+  die "既没有 build/build.sh，也没有可执行的 tools/bazel"
+fi
+if [ -f "$BUILD_SH" ]; then
+  info "构建入口 : build/build.sh"
+else
+  info "构建入口 : tools/bazel（Kleaf）"
+fi
 
 # build.sh 只读 defconfig，不认我们事先放在 $OUT 里的 .config。
 # 把已经组装好（原厂配置 + root/功能片段，且跑过 olddefconfig）的那份
@@ -163,6 +182,7 @@ for cfg in "$COMMON/build.config.gki" "$COMMON/build.config.gki.aarch64"; do
   sed -i 's|^[[:space:]]*check_defconfig[[:space:]]*$|true|' "$cfg"
 done
 
+if [ -f "$BUILD_SH" ]; then
 OUT_DIR="$WS/out/script-build"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
@@ -203,7 +223,60 @@ if [ ! -f "$IMG" ]; then
   # build.sh 的产物位置随版本变过，兜底找一次
   IMG="$(find "$OUT_DIR" -maxdepth 4 -name Image -type f 2>/dev/null | head -1)"
 fi
-[ -n "$IMG" ] && [ -f "$IMG" ] || die "build.sh 返回 0 但找不到 Image（$OUT_DIR）"
+else
+# ---------------------------------------------------------------------------
+# Kleaf（Android 13+ 官方主路径）
+#   tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
+# Kleaf 同样只认 common/arch/arm64/configs/gki_defconfig，配置覆盖上面已做过。
+# ---------------------------------------------------------------------------
+
+# Kleaf 的 BUILD.bazel 里 check_defconfig 会拿 defconfig 与最终 .config 比，
+# 这份是完整 .config，必然对不上 —— 关掉（与官方 --config=fast 无关）。
+python3 - "$COMMON/BUILD.bazel" <<'PY' || true
+import sys
+p = sys.argv[1]
+s = open(p).read()
+if 'check_defconfig = "disabled"' in s or 'name = "kernel_aarch64",' not in s:
+    raise SystemExit(0)
+s = s.replace('name = "kernel_aarch64",',
+              'name = "kernel_aarch64",\n    check_defconfig = "disabled",', 1)
+open(p, 'w').write(s)
+print("[+] BUILD.bazel: check_defconfig = disabled")
+PY
+
+KLEAF_DIST="$WS/out/kleaf-dist"
+rm -rf "$KLEAF_DIST"
+mkdir -p "$KLEAF_DIST"
+
+START=$(date +%s)
+set +e
+(
+  cd "$KROOT" || exit 1
+  tools/bazel build --config=fast --lto=thin \
+    //common:kernel_aarch64_dist -- --destdir="$KLEAF_DIST"
+) > "$OUT/build.log" 2>&1
+RC=$?
+set -e
+ELAPSED=$(( $(date +%s) - START ))
+
+if [ "$RC" != "0" ]; then
+  warn "Kleaf 失败（${ELAPSED}s，返回 $RC）"
+  echo "===== 疑似错误行（最多 60 条）====="
+  grep -niE 'error|undefined reference|no such target|not found|killed|fatal|abort|out of memory' "$OUT/build.log" \
+    | head -60 || true
+  echo "===== 日志末尾 40 行 ====="
+  tail -40 "$OUT/build.log"
+  die "Kleaf 返回 $RC"
+fi
+log "编译完成（${ELAPSED}s）"
+
+IMG="$KLEAF_DIST/Image"
+if [ ! -f "$IMG" ]; then
+  IMG="$(find "$KLEAF_DIST" "$KROOT/bazel-bin" -maxdepth 6 -name Image -type f 2>/dev/null | head -1)"
+fi
+fi    # ← build.sh / Kleaf 分支结束
+
+[ -n "$IMG" ] && [ -f "$IMG" ] || die "编译成功但找不到 Image（入口：$( [ -f "$BUILD_SH" ] && echo build.sh || echo Kleaf )）"
 mkdir -p "$DIST"
 install -m 0644 "$IMG" "$DIST/Image"
 

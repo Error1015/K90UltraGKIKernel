@@ -111,10 +111,17 @@ esac
 info "锁定 tag: $TAG"
 
 if [ -n "$TAG" ]; then
-  MANIFEST_FILE="$(find "$KROOT/.repo/manifests" -maxdepth 1 -name '*.xml' | head -1)"
-  [ -n "$MANIFEST_FILE" ] || die "找不到 manifest 文件"
-  python3 "$WS/project/pin_manifest.py" "$MANIFEST_FILE" "refs/tags/$TAG" \
-    || die "钉 manifest 失败"
+  # manifest 可能是 include 结构：default.xml 里只有 <include>，真正的
+  # <project> 列表在子 xml 里。所以挑「哪个文件里有 path="common"」。
+  MANIFEST_FILE="$(grep -l 'path="common"' "$KROOT"/.repo/manifests/*.xml 2>/dev/null | head -1)"
+  [ -n "$MANIFEST_FILE" ] \
+    || MANIFEST_FILE="$(find "$KROOT/.repo/manifests" -maxdepth 1 -name '*.xml' | head -1)"
+  if [ -n "$MANIFEST_FILE" ]; then
+    python3 "$WS/project/pin_manifest.py" "$MANIFEST_FILE" "refs/tags/$TAG" \
+      || warn "没能把 common 钉到 $TAG（manifest 结构变了？），本轮源码版本由分支决定"
+  else
+    warn "找不到 manifest 文件，跳过钉 tag"
+  fi
 fi
 
 log "repo sync（首次约 5~15 分钟；单次上限 ${SYNC_TIMEOUT:-1800} 秒）"
@@ -135,48 +142,51 @@ retry 2 sync_once || die "repo sync 失败（googlesource 限速时重跑即可�
 [ -f "$COMMON/Makefile" ] || die "同步后找不到 $COMMON/Makefile"
 
 # ---------------------------------------------------------------------------
-log "阶段 1a/6：确认 build/ 项目"
+log "阶段 1a/6：确认构建入口"
 # ---------------------------------------------------------------------------
-# 官方构建入口是 kernel/build 里的 build/build.sh：
-#   LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
-# 但 common-android15-6.6-lts 这个 manifest 分支只保证 common + prebuilts，
-# build 项目不一定跟着下来。缺了它就跑不了官方路径，所以这里兜底单拉一份。
+# Android 13 起官方主路径是 Kleaf（tools/bazel），build.sh 在新分支里已删除。
+# 老一点的树还有 build/build.sh。两条都要支持：谁在就用谁。
 BUILD_DIR="$KROOT/build"
-if [ ! -f "$BUILD_DIR/build.sh" ]; then
+KLEAF_BIN="$KROOT/tools/bazel"
+
+if [ -x "$KLEAF_BIN" ]; then
+  info "构建入口 : tools/bazel（Kleaf）✓"
+elif [ ! -f "$BUILD_DIR/build.sh" ]; then
   # 先按 manifest 里的定义同步 —— 它带的 revision 与 common 最匹配
   info "尝试按 manifest 定义同步 build 项目"
   if timeout 300 repo sync -c --current-branch --no-tags -j"$(nproc)" build < /dev/null > /dev/null 2>&1; then
     [ -f "$BUILD_DIR/build.sh" ] && info "build 项目已按 manifest 同步"
   fi
-fi
-if [ ! -f "$BUILD_DIR/build.sh" ]; then
-  warn "缺少 $BUILD_DIR/build.sh，单独拉取 kernel/build"
-  for br in "common-${ANDROID_BRANCH}" "${ANDROID_BRANCH}" "common-${MANIFEST_BRANCH#common-}" main; do
+  if [ ! -f "$BUILD_DIR/build.sh" ]; then
+    warn "缺少 $BUILD_DIR/build.sh，单独拉取 kernel/build"
+    for br in "common-${ANDROID_BRANCH}" "${ANDROID_BRANCH}" "common-${MANIFEST_BRANCH#common-}" main; do
+      rm -rf "$KROOT/build.tmp"
+      info "尝试分支 $br"
+      if retry 2 git clone --depth 1 -b "$br" \
+           https://android.googlesource.com/kernel/build "$KROOT/build.tmp" < /dev/null; then
+        rm -rf "$BUILD_DIR"
+        mv "$KROOT/build.tmp" "$BUILD_DIR"
+        info "kernel/build 已就绪（分支 $br）"
+        break
+      fi
+      warn "分支 $br 拉取失败"
+    done
     rm -rf "$KROOT/build.tmp"
-    info "尝试分支 $br"
-    if retry 2 git clone --depth 1 -b "$br" \
-         https://android.googlesource.com/kernel/build "$KROOT/build.tmp" < /dev/null; then
-      rm -rf "$BUILD_DIR"
-      mv "$KROOT/build.tmp" "$BUILD_DIR"
-      info "kernel/build 已就绪（分支 $br）"
-      break
-    fi
-    warn "分支 $br 拉取失败"
-  done
-  rm -rf "$KROOT/build.tmp"
+  fi
+  [ -f "$BUILD_DIR/build.sh" ] || info "没有 build.sh —— 交由 build.sh 步骤报告构建入口诊断"
+else
+  info "构建入口 : build/build.sh ✓"
 fi
-[ -f "$BUILD_DIR/build.sh" ] \
-  || die "仍然没有 $BUILD_DIR/build.sh，无法使用官方 build/build.sh"
-info "build.sh : $BUILD_DIR/build.sh"
 
-# 官方 build.sh 除了 clang 还要这几样；缺了会在十几分钟后才报错，先看一眼
-for p in prebuilts/clang/host/linux-x86 \
-         prebuilts/build-tools/linux-x86/bin \
-         prebuilts/gas/linux-x86; do
+# Kleaf 需要这几样；缺了会在构建中途才报错，先看一眼
+for p in tools/bazel \
+         common/build.config.gki.aarch64 \
+         prebuilts/clang/host/linux-x86 \
+         prebuilts/build-tools/linux-x86/bin; do
   if [ -e "$KROOT/$p" ]; then
-    info "[prebuilts] $p ✓"
+    info "[需要] $p ✓"
   else
-    warn "[prebuilts] 缺 $p —— build.sh 可能中途失败"
+    warn "[需要] 缺 $p —— 构建可能失败"
   fi
 done
 
