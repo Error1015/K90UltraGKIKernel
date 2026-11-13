@@ -1,25 +1,20 @@
 name: Build K90 Ultra GKI
 
 # ---------------------------------------------------------------------------
-# 一次运行出两份包（矩阵并行）：
-#   vanilla —— 纯内核，不带 root。用来证明"内核本身能在这台机器上启动"。
-#   <root>  —— 选定的 root 管理器（默认 bakasu）+ 可选 SUSFS / 附加功能。
+# 只服务 Redmi K90 Ultra（warsaw）。一次运行产出所选 root 的一套文件：
+#   boot-warsaw-<root>-<ver>.img   96MB 完整 boot 分区镜像，fastboot flash boot
+#   ak3-warsaw-<root>-<ver>.zip    AnyKernel3 包（内部就是同一个完整镜像，只做 dd）
 #
-# 两份都是 **完整 boot 分区镜像**（96MB，含 vbmeta 与 AVB footer，ramdisk_size=0），
-# 用 `fastboot flash boot` 刷入。不用 AnyKernel3 —— 它只写内核，
-# 会把 footer 指向的 vbmeta 覆盖掉，结果就是卡 logo。
+# 镜像里含 vbmeta blob 与 AVB footer（ramdisk_size=0），换内核时必须整体重打包 ——
+# 所以 AK3 走的是"写整分区镜像"，不是传统的"只换内核再 repack"。
+#
+# 内核版本/tag/版本串/页大小/分区大小全部锁在 project/device.env。
 # ---------------------------------------------------------------------------
 on:
   workflow_dispatch:
     inputs:
-      kernel_release:
-        description: '手机 uname -r 的版本（如 6.6.118），会锁到同版本的 ACK tag'
-        required: true
-        default: '6.6.118'
-      kernel_tag:
-        description: '直接指定 ACK tag（填了就忽略 kernel_release）'
-        required: false
-        default: ''
+      # 内核版本 / tag / 版本串 / 页大小 / 分区大小全部锁在 project/device.env，
+      # 不再作为输入暴露 —— 这个仓库只服务 K90 Ultra 一台机器，填错只会编出 KMI 不匹配的包。
       root:
         description: 'root 实现（bakasu 单个 / all 一次出全部 5 个）'
         type: choice
@@ -60,10 +55,6 @@ on:
         type: boolean
         default: false
 
-      localversion:
-        description: '版本串后缀（保留 -android15-8 前缀，别破坏 KMI 标识）'
-        required: true
-        default: '-android15-8-warsaw-4k'
       release:
         description: '发布方式'
         type: choice
@@ -128,9 +119,6 @@ jobs:
         include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
 
     env:
-      ANDROID_BRANCH: android15-6.6
-      KERNEL_RELEASE: ${{ inputs.kernel_release }}
-      KERNEL_TAG: ${{ inputs.kernel_tag }}
       ROOT_IMPL: ${{ matrix.root }}
       SUSFS: ${{ matrix.susfs }}
       NOMOUNT: ${{ matrix.nomount }}
@@ -140,12 +128,21 @@ jobs:
       BPF: ${{ matrix.bpf }}
       DROIDSPACES: ${{ matrix.droidspaces }}
       UNICODE: ${{ matrix.unicode }}
-      LOCALVERSION: ${{ inputs.localversion }}
       VARIANT: ${{ matrix.name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 把锁定的机型/内核基准导出成环境变量，后面的 shell 步骤和
+      # ${{ env.* }} 表达式都用它（各脚本自己也会 source device.env，值一致）
+      - name: 读取锁定的机型/内核基准
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -E '^[A-Z][A-Z0-9_]*=' project/device.env >> "$GITHUB_ENV"
+          ( set -a; . project/device.env; set +a
+            echo "内核基准：$KERNEL_RELEASE / $KERNEL_TAG / $LOCALVERSION" )
 
       - name: 清理磁盘
         run: |
@@ -256,7 +253,7 @@ jobs:
             echo "| NoMount / BBG | ${NOMOUNT} / ${BBG} |"
             echo "| NTSync / Networking | ${NTSYNC} / ${NETWORKING} |"
             echo "| BPF / DroidSpaces / Unicode | ${BPF} / ${DROIDSPACES} / ${UNICODE} |"
-            echo "| 源码 tag | ${KERNEL_TAG:-按版本自动解析} |"
+            echo "| 源码 tag | ${KERNEL_TAG}（project/device.env 锁定） |"
             echo "| 产物 | \`${BOOT_NAME}.img\` |"
             echo ""
             if [ -f "dist/build-info-${{ matrix.name }}.md" ]; then
@@ -274,6 +271,16 @@ jobs:
     if: ${{ always() && inputs.release != 'none' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # tag 名和发布说明标题都要用锁定的内核版本
+      - name: 读取锁定的机型/内核基准
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -E '^[A-Z][A-Z0-9_]*=' project/device.env >> "$GITHUB_ENV"
+
       - name: 下载产物
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -308,7 +315,7 @@ jobs:
           for f in "${infos[@]}"; do cp -f "$f" "dist/$(basename "$f")"; done
 
           {
-            echo "# K90 Ultra (warsaw) GKI — ${{ inputs.kernel_release }}"
+            echo "# K90 Ultra (warsaw) GKI — ${{ env.KERNEL_RELEASE }}"
             echo
             echo "同一份源码、同一份配置，只有 root 不同。刷哪个就装哪个的管理器 APK。"
             echo
@@ -349,8 +356,8 @@ jobs:
         if: steps.collect.outputs.count != '0'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: warsaw-${{ inputs.kernel_release }}-${{ github.run_number }}
-          name: K90 Ultra GKI ${{ inputs.kernel_release }} (run ${{ github.run_number }})
+          tag_name: warsaw-${{ env.KERNEL_RELEASE }}-${{ github.run_number }}
+          name: K90 Ultra GKI ${{ env.KERNEL_RELEASE }} (run ${{ github.run_number }})
           body_path: dist/RELEASE.md
           files: |
             dist/*.img

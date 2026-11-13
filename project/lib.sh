@@ -9,13 +9,23 @@
 set -euo pipefail
 
 WS="${GITHUB_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# ---------------------------------------------------------------------------
+# 机型 / 内核基准（唯一真源）。用普通赋值，覆盖外部同名环境变量 —— 故意锁死，
+# 免得 CI 上一次手滑填错版本，编出一个 KMI 和手机对不上的内核。
+# ---------------------------------------------------------------------------
+DEVICE_ENV="$WS/project/device.env"
+if [ ! -f "$DEVICE_ENV" ]; then
+  printf '\033[1;31m[x] 缺少 %s（机型/内核基准）\033[0m\n' "$DEVICE_ENV" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+. "$DEVICE_ENV"
+
 KROOT="$WS/kernel"        # repo sync 出来的 kernel_platform 根
 COMMON="$KROOT/common"    # GKI 通用内核源码（真正的内核树）
 OUT="$WS/out"             # O= 构建目录
 DIST="$WS/dist"           # 产物目录
-
-ANDROID_BRANCH="${ANDROID_BRANCH:-android15-6.6}"
-PAGE_SIZE=4096
 
 mkdir -p "$OUT" "$DIST"
 

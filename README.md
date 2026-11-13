@@ -137,18 +137,34 @@ SUSFS 胶水是运行时探测的：先看 root 仓库自己的 `Kconfig` 里有
 Actions → Build K90 Ultra GKI → Run workflow
 ```
 
-默认参数（`kernel_release=6.6.118`、`root=bakasu`、`susfs=true`）直接跑即可，
-约 15~25 分钟；选 `root=all` 时 5 个 job 并行，墙钟时间差不多（各自独立 sync + 编译）。
+默认参数（`root=bakasu`、`susfs=true`）直接跑即可，约 15~25 分钟；
+选 `root=all` 时 5 个 job 并行，墙钟时间差不多（各自独立 sync + 编译）。
+
+**内核版本、tag、版本串、页大小、分区大小全部锁死在 `project/device.env`，不是参数。**
+这个仓库只服务 warsaw 一台机器，把版本做成输入只会多一个填错的机会
+（填错的表现是能出包、刷进去 vendor 模块全部 `unknown symbol`）。
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `kernel_release` | `6.6.118` | 手机 `uname -r` 的版本。会自动解析出同版本的 ACK 发布 tag 并锁源码；解析不到会回退到分支 HEAD，但随后会因为版本校验不通过而**中断**（不会产出包） |
-| `kernel_tag` | 空 | 直接钉 ACK tag，例如 `android15-6.6-2026-XX_rN`，填了就忽略 `kernel_release` |
 | `root` | `bakasu` | 可选 `bakasu` / `sukisu-ultra` / `kernelsu` / `kernelsu-next` / `kowsu` / `none` |
 | `susfs` | `true` | 需要 root 不为 none；kowsu 会自动关掉 |
 | `nomount` / `bbg` / `ntsync` / `networking` / `bpf` / `droidspaces` / `unicode` | `false` | 附加功能，见上一节 |
-| `localversion` | `-android15-8-warsaw-4k` | 保留 `-android15-8` 前缀（KMI 标识） |
 | `release` | `release` | `release` / `prerelease` / `none`（只留 Artifacts） |
+| `publish_run_id` | 空 | 只发布：填一次成功运行的 run id，取那次产物发 Release，不重新编译 |
+
+锁定的基准（`project/device.env`）：
+
+| 项 | 值 |
+| --- | --- |
+| 机型 / SoC | `warsaw` / `sm8750` |
+| 内核版本 | `6.6.118`（必须与手机 `uname -r` 一致） |
+| ACK tag | `android15-6.6.118_r00`（写死，不再每次去 googlesource 解析） |
+| 源码分支 | `android15-6.6` / manifest `common-android15-6.6-lts` |
+| 版本串 | `-android15-8-warsaw-4k`（`-android15-8` 是 KMI 标识，别动） |
+| 页大小 / 分区 | `4096` / `100663296`（96MB） |
+
+这些值在 `lib.sh` 里以普通赋值覆盖环境变量，**从外部传同名变量不会生效**。
+真要换机型或换内核，改这个文件，并在 PR 里说明。
 
 ---
 
@@ -216,12 +232,13 @@ fastboot boot boot-warsaw-sukisu-6.6.118.img   # 只在内存里起一次，重�
 ```
 .github/workflows/build.yml   唯一构建入口（选定 root 一条，或 root=all 出 5 条；最后合并成一个 Release）
 project/
+  device.env                  机型/内核基准（版本、tag、版本串、页大小、分区）唯一真源
   prepare.sh                  同步源码 + 锁版本 + 集成 root/SUSFS/附加功能 + 写配置
   build.sh                    make Image + 配置回读 + 产物自检
   pack.py                     AVB 感知的 boot.img 打包/检查
   verify.py                   发布前验收（结构 + 版本 + 内嵌配置）
   template.py                 从原厂 boot.img 重新生成打包模板
-  resolve_tag.py              6.6.118 → ACK 发布 tag
+  resolve_tag.py              备用：按版本反查 ACK tag（默认走 device.env 里写死的 tag）
   pin_manifest.py             把 manifest 里 common 的 revision 钉到 tag
   susfs_66_compat.py          SUSFS 在 6.6 上的固定编译坑（幂等）
   ak3.sh                      把完整 boot.img 封成 AnyKernel3 zip

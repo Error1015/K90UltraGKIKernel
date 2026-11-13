@@ -171,6 +171,15 @@ echo "$VERSION_STR" > "$DIST/kernel-version.txt"
 # Image 不能大到把 vbmeta 挤出 boot 分区（96MB）
 PART_SIZE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["partition_size"])' \
              "$WS/firmware/boot-template.json")"
+TM_PAGE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["page_size"])' \
+           "$WS/firmware/boot-template.json")"
+
+# device.env 与打包模板必须完全对得上，否则会打出一个"能刷但起不来"的镜像
+[ "$PART_SIZE" = "$PARTITION_SIZE" ] \
+  || die "device.env 的 PARTITION_SIZE($PARTITION_SIZE) 与 boot-template.json($PART_SIZE) 不一致"
+[ "$TM_PAGE" = "$PAGE_SIZE" ] \
+  || die "device.env 的 PAGE_SIZE($PAGE_SIZE) 与 boot-template.json($TM_PAGE) 不一致"
+info "分区 / 页大小: $PART_SIZE 字节 / $PAGE_SIZE（与模板一致）"
 NEED=$(( 4096 + SIZE ))
 NEED=$(( (NEED + 4095) / 4096 * 4096 ))
 VB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["vbmeta_size"])' \

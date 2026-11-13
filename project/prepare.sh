@@ -14,15 +14,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 MANIFEST_URL="${MANIFEST_URL:-https://android.googlesource.com/kernel/manifest}"
 COMMON_URL="${COMMON_URL:-https://android.googlesource.com/kernel/common}"
 
-KERNEL_RELEASE="${KERNEL_RELEASE:-6.6.118}"
-KERNEL_TAG="${KERNEL_TAG:-}"
-MANIFEST_BRANCH="${MANIFEST_BRANCH:-common-${ANDROID_BRANCH}-lts}"
+# KERNEL_RELEASE / KERNEL_TAG / ANDROID_BRANCH / MANIFEST_BRANCH / LOCALVERSION /
+# PAGE_SIZE / PARTITION_SIZE / SUSFS_BRANCH 全部来自 project/device.env（lib.sh 已 source），
+# 这里不再做默认值回退 —— 那些值是要锁死的。
 
 ROOT_IMPL="${ROOT_IMPL:-bakasu}"               # bakasu 为默认
 ROOT_REF="${ROOT_REF:-}"                       # 留空 = 各仓库默认分支
 
 SUSFS="${SUSFS:-true}"
-SUSFS_BRANCH="${SUSFS_BRANCH:-gki-android15-6.6}"
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu.git}"
 SUSFS_COMMIT="${SUSFS_COMMIT:-}"
 
@@ -39,8 +38,6 @@ UNICODE="${UNICODE:-false}"
 
 KERNEL_PATCHES_REF="${KERNEL_PATCHES_REF:-main}"
 KERNEL_PATCHES_REPO="${KERNEL_PATCHES_REPO:-https://github.com/WildKernels/kernel_patches.git}"
-
-LOCALVERSION="${LOCALVERSION:--android15-8-warsaw-4k}"
 
 mkdir -p "$KROOT"
 
@@ -103,22 +100,15 @@ if [ ! -d .repo ]; then
   [ "$INIT_OK" = "1" ] || die "repo init 失败（manifest 分支都不存在？）"
 fi
 
+# tag 直接取自 device.env，不再每次去 googlesource 列一遍远端 tag。
+# 那一步既慢又容易限速，更麻烦的是会让"同一份仓库、不同时间跑"拉到不同源码。
 TAG="$KERNEL_TAG"
-if [ -z "$TAG" ]; then
-  log "解析 6.6.${KERNEL_RELEASE##*.} 对应的 ACK 发布 tag（要列一次远端 tag，约 10~60 秒）"
-  if TAG="$(python3 "$WS/project/resolve_tag.py" \
-              --repo "$COMMON_URL" --branch "$ANDROID_BRANCH" --version "$KERNEL_RELEASE")"; then
-    info "命中 tag: $TAG"
-  else
-    # 直接失败：回退到分支 HEAD 后必然会在"校验源码版本"那一步挂掉，
-    # 白等十几分钟 repo sync 没有意义。
-    die "没解析到 6.6.${KERNEL_RELEASE##*.} 对应的 ACK 发布 tag。
-    两个办法：
-      1) 把 kernel_tag 直接填上（形如 android15-6.6-2025-12_r3，见上面探测输出里的候选）
-      2) 换一个确定存在的 kernel_release 再跑
-    （如果上面只是网络超时/被限速，直接重跑一次 workflow 即可）"
-  fi
-fi
+[ -n "$TAG" ] || die "project/device.env 里 KERNEL_TAG 是空的"
+case "$TAG" in
+  *"$KERNEL_RELEASE"*) : ;;
+  *) die "KERNEL_TAG($TAG) 与 KERNEL_RELEASE($KERNEL_RELEASE) 对不上，检查 project/device.env" ;;
+esac
+info "锁定 tag: $TAG"
 
 if [ -n "$TAG" ]; then
   MANIFEST_FILE="$(find "$KROOT/.repo/manifests" -maxdepth 1 -name '*.xml' | head -1)"
@@ -153,7 +143,7 @@ info "源码 SUBLEVEL = $GOT_SUB（期望 $WANT_SUB）"
 if [ -n "$WANT_SUB" ] && [ "$GOT_SUB" != "$WANT_SUB" ]; then
   die "源码版本与手机不一致：期望 6.6.$WANT_SUB，实际 6.6.$GOT_SUB。
     KMI 冻结的是符号 CRC，跨 sublevel 可能让 vendor 模块全部加载失败。
-    想强行继续就显式传 KERNEL_RELEASE=$GOT_SUB。"
+    确实要换版本就去改 project/device.env 里的 KERNEL_RELEASE / KERNEL_TAG。"
 fi
 
 # ---------------------------------------------------------------------------
